@@ -13,11 +13,26 @@ Features:
 
 import sys
 import os
+
+# Restrict thread pools to avoid exceeding CyberPanel 1GB vmemory limit
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
 import json
 import base64
 import argparse
 import numpy as np
 import cv2
+
+# Disable OpenCV multi-threading & OpenCL to maintain tiny virtual memory footprint (<50MB)
+try:
+    cv2.setNumThreads(1)
+    cv2.ocl.setUseOpenCL(False)
+except Exception:
+    pass
 
 
 def analyze_image_quality(gray):

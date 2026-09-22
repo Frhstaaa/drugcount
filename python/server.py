@@ -6,12 +6,28 @@ Listens on http://127.0.0.1:5175
 """
 
 import sys
+import os
+
+# Restrict thread pools to avoid exceeding CyberPanel 1GB vmemory limit
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
 import json
 import base64
 import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import numpy as np
 import cv2
+
+# Disable OpenCV multi-threading & OpenCL to keep VIRT memory tiny
+try:
+    cv2.setNumThreads(1)
+    cv2.ocl.setUseOpenCL(False)
+except Exception:
+    pass
 
 # Import detection logic
 from detect_pills import detect_pills, load_image

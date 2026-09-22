@@ -74,17 +74,27 @@ class PillDetectorController extends Controller
             $pythonScript = base_path('python/detect_pills.py');
             $pythonBin = $this->getPythonBinary();
 
-            $process = new Process([
-                $pythonBin,
-                $pythonScript,
-                '--image', $tmpFile,
-                '--shape', $shape,
-                '--min-area', (string)$minArea,
-                '--max-area', (string)$maxArea,
-                '--sensitivity', (string)$sensitivity,
-            ]);
+            $process = new Process(
+                [
+                    $pythonBin,
+                    $pythonScript,
+                    '--image', $tmpFile,
+                    '--shape', $shape,
+                    '--min-area', (string)$minArea,
+                    '--max-area', (string)$maxArea,
+                    '--sensitivity', (string)$sensitivity,
+                ],
+                base_path(),
+                [
+                    'OMP_NUM_THREADS' => '1',
+                    'OPENBLAS_NUM_THREADS' => '1',
+                    'MKL_NUM_THREADS' => '1',
+                    'VECLIB_MAXIMUM_THREADS' => '1',
+                    'NUMEXPR_NUM_THREADS' => '1',
+                ]
+            );
 
-            $process->setTimeout(15);
+            $process->setTimeout(20);
             $process->run();
 
             if (file_exists($tmpFile)) {
