@@ -53,8 +53,23 @@ class PillDetectorController extends Controller
 
         // Option 2: Direct CLI execution via python detect_pills.py
         try {
-            $tmpFile = tempnam(sys_get_temp_dir(), 'pill_img_') . '.txt';
-            file_put_contents($tmpFile, $imageB64);
+            $binaryImage = null;
+            if (strpos($imageB64, 'data:image') === 0) {
+                $parts = explode(',', $imageB64, 2);
+                if (isset($parts[1])) {
+                    $binaryImage = base64_decode($parts[1]);
+                }
+            } else {
+                $binaryImage = base64_decode($imageB64);
+            }
+
+            if ($binaryImage !== null && strlen($binaryImage) > 10) {
+                $tmpFile = tempnam(sys_get_temp_dir(), 'pill_') . '.jpg';
+                file_put_contents($tmpFile, $binaryImage);
+            } else {
+                $tmpFile = tempnam(sys_get_temp_dir(), 'pill_') . '.txt';
+                file_put_contents($tmpFile, $imageB64);
+            }
 
             $pythonScript = base_path('python/detect_pills.py');
             $pythonBin = $this->getPythonBinary();

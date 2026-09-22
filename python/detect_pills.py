@@ -316,24 +316,43 @@ def detect_pills(image, shape_filter="all", min_area=140, max_area=7500, sensiti
 
 
 def load_image(image_input):
-    """Load image from base64 data URI or file path."""
-    if image_input.startswith("data:image"):
-        header, encoded = image_input.split(",", 1)
-        data = base64.b64decode(encoded)
-        nparr = np.frombuffer(data, np.uint8)
-        return cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-    elif os.path.isfile(image_input):
-        return cv2.imread(image_input)
-    else:
+    """Load image from base64 data URI, raw base64, or file path."""
+    if os.path.isfile(image_input):
+        # 1. Try reading as binary image directly
+        img = cv2.imread(image_input)
+        if img is not None:
+            return img
+
+        # 2. If it is a text file containing base64 data
         try:
-            data = base64.b64decode(image_input)
+            with open(image_input, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read().strip()
+            if content:
+                return load_image(content)
+        except Exception:
+            pass
+
+    if image_input.startswith("data:image"):
+        try:
+            header, encoded = image_input.split(",", 1)
+            data = base64.b64decode(encoded)
             nparr = np.frombuffer(data, np.uint8)
             img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
             if img is not None:
                 return img
         except Exception:
             pass
-        raise ValueError(f"Cannot load image from input: {image_input[:50]}...")
+
+    try:
+        data = base64.b64decode(image_input)
+        nparr = np.frombuffer(data, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if img is not None:
+            return img
+    except Exception:
+        pass
+
+    raise ValueError(f"Cannot load image from input: {str(image_input)[:50]}...")
 
 
 def main():

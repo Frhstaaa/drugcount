@@ -262,9 +262,20 @@ if ($pyRet === 0) {
         output("  Tercatat PYTHON_BIN={$pythonCmd} pada .env", 'info');
     }
 
-    // Install requirements jika belum lengkap
-    output("  Memeriksa paket Python requirements.txt...");
-    runCommand("cd {$baseDir} && {$pythonCmd} -m pip install -r python/requirements.txt --no-warn-script-location");
+    // Install requirements (dengan kompatibilitas NumPy 1.x untuk mencegah Signal 11 Segmentation Fault)
+    output("  Menginstal dependensi OpenCV & NumPy (<2.0.0)...");
+    runCommand("cd {$baseDir} && {$pythonCmd} -m pip install \"numpy>=1.24.0,<2.0.0\" \"opencv-python-headless>=4.8.0,<5.0.0\" \"pillow>=10.0.0\" --no-warn-script-location");
+
+    // Validasi import OpenCV dan NumPy
+    $checkCmd = "{$pythonCmd} -c \"import cv2, numpy as np; print('CV2: ' + cv2.__version__ + ' | NumPy: ' + np.__version__)\" 2>&1";
+    $chkOut = [];
+    $chkRet = 0;
+    exec($checkCmd, $chkOut, $chkRet);
+    if ($chkRet === 0) {
+        output("  [OK KESTABILAN] " . implode(' ', $chkOut), 'success');
+    } else {
+        output("  [PERINGATAN] " . implode(' ', $chkOut), 'warning');
+    }
 } else {
     output("  [PERINGATAN] Python tidak ditemukan pada PATH server.", 'error');
 }
