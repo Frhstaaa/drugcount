@@ -26,6 +26,16 @@ import argparse
 import numpy as np
 import cv2
 
+# High-level scientific imaging libraries (SciPy & Scikit-Image)
+try:
+    from scipy import ndimage as ndi
+    from scipy.spatial.distance import cdist
+    from skimage.measure import regionprops, label
+    from skimage.feature import peak_local_max
+    HAS_SCIENTIFIC = True
+except ImportError:
+    HAS_SCIENTIFIC = False
+
 # Disable OpenCV multi-threading & OpenCL to maintain tiny virtual memory footprint (<50MB)
 try:
     cv2.setNumThreads(1)
@@ -67,17 +77,17 @@ def analyze_image_quality(gray):
 
 def classify_pill_shape(contour, approx, aspect_ratio, circularity, solidity, area):
     """
-    Classify pill based on morphological geometry with strict rejection:
-    - Tablet: circular or slightly oval (aspect ratio <= 1.45, circularity >= 0.65, solidity >= 0.85)
-    - Capsule: elongated shape (aspect ratio 1.45 - 3.8, circularity >= 0.40, solidity >= 0.84)
-    - Racikan: irregular contours of broken tablets (circularity >= 0.55, solidity >= 0.80, area <= 3500)
+    Classify pill based on morphological geometry with realistic physical metrics:
+    - Tablet: circular or slightly oval (aspect ratio <= 1.65, circularity >= 0.35, solidity >= 0.70)
+    - Capsule: elongated shape (aspect ratio 1.35 - 4.2, circularity >= 0.25, solidity >= 0.68)
+    - Racikan: irregular contours of broken tablets (circularity >= 0.28, solidity >= 0.65, area <= 6500)
     """
-    if circularity >= 0.65 and solidity >= 0.85 and aspect_ratio <= 1.45:
+    if solidity >= 0.70 and aspect_ratio <= 1.65 and circularity >= 0.35:
         return "tablet", 0.98
-    elif solidity >= 0.84 and 1.45 <= aspect_ratio <= 3.8 and circularity >= 0.40:
+    elif solidity >= 0.68 and 1.35 <= aspect_ratio <= 4.2 and circularity >= 0.25:
         return "capsule", 0.96
-    elif solidity >= 0.80 and circularity >= 0.55 and area <= 3500 and aspect_ratio <= 2.2:
-        return "racikan", 0.86
+    elif solidity >= 0.65 and circularity >= 0.28 and area <= 6500 and aspect_ratio <= 2.8:
+        return "racikan", 0.88
     return None, 0.0
 
 
@@ -132,9 +142,13 @@ def detect_pills(image, shape_filter="all", min_area=140, max_area=7500, sensiti
     cleaned = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=1)
     cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_CLOSE, kernel, iterations=2)
 
-    dist_transform = cv2.distanceTransform(cleaned, cv2.DIST_L2, 5)
+    if HAS_SCIENTIFIC:
+        dist_transform = ndi.distance_transform_edt(cleaned == 255).astype(np.float32)
+    else:
+        dist_transform = cv2.distanceTransform(cleaned, cv2.DIST_L2, 5)
+
     if dist_transform.max() > 0:
-        thresh_factor = max(0.30, min(0.65, 0.65 - (sensitivity / 100.0) * 0.35))
+        thresh_factor = max(0.20, min(0.55, 0.55 - (sensitivity / 100.0) * 0.35))
         _, sure_fg = cv2.threshold(dist_transform, thresh_factor * dist_transform.max(), 255, 0)
         sure_fg = np.uint8(sure_fg)
 
@@ -321,9 +335,14 @@ def detect_pills(image, shape_filter="all", min_area=140, max_area=7500, sensiti
                         })
 
     # ==========================================
-    # STRATEGY 3: Outlier Size Filtering
+    # STRATEGY 3: Blister Priority, Outlier Size Filtering & Spatial De-duplication
     # ==========================================
-    if len(candidate_pills) >= 4:
+    # If blister pack with high confidence was detected (>=4 uniform circular tablets),
+    # prioritize blister tablets and suppress stray background noise outside the blister pack
+    blister_pills = [p for p in candidate_pills if p.get("source") == "hough"]
+    if len(blister_pills) >= 4:
+        filtered_candidates = blister_pills
+    elif len(candidate_pills) >= 4:
         areas = [p["area"] for p in candidate_pills]
         median_area = np.median(areas)
         filtered_candidates = [
@@ -332,6 +351,20 @@ def detect_pills(image, shape_filter="all", min_area=140, max_area=7500, sensiti
         ]
     else:
         filtered_candidates = candidate_pills
+
+    # Scientific spatial de-duplication (pills cannot physically overlap in 2D space)
+    if HAS_SCIENTIFIC and len(filtered_candidates) > 1:
+        coords = np.array([[p["cx"], p["cy"]] for p in filtered_candidates])
+        dists = cdist(coords, coords)
+        keep = [True] * len(filtered_candidates)
+        for i in range(len(filtered_candidates)):
+            if not keep[i]:
+                continue
+            for j in range(i + 1, len(filtered_candidates)):
+                min_r = min(filtered_candidates[i]["r"], filtered_candidates[j]["r"])
+                if dists[i, j] < min_r * 0.80:
+                    keep[j] = False
+        filtered_candidates = [filtered_candidates[i] for i in range(len(filtered_candidates)) if keep[i]]
 
     # Prepare output results and visual overlay
     detected_pills = []

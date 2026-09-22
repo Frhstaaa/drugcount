@@ -56,8 +56,13 @@ $quickCommands = [
     ],
     'git_pull' => [
         'label' => '🔄 Git Pull & Update Semua',
-        'cmd' => 'git fetch origin main && git reset --hard origin/main && git pull origin main && php artisan migrate --force && php artisan optimize:clear && fuser -k 5175/tcp 2>/dev/null; pkill -f "python.*server.py" 2>/dev/null; nohup python3 python/server.py > python/server.log 2>&1 & sleep 1; curl -s http://127.0.0.1:5175/health || echo "Daemon aktif"',
-        'desc' => 'Menarik kode terbaru, migrasi DB, dan otomatis menyalakan ulang engine Python terbaru'
+        'cmd' => 'git fetch origin main && git reset --hard origin/main && git pull origin main && php artisan migrate --force && php artisan optimize:clear && python3 -m pip install scipy scikit-image --no-warn-script-location && fuser -k 5175/tcp 2>/dev/null; pkill -f "python.*server.py" 2>/dev/null; nohup python3 python/server.py > python/server.log 2>&1 & sleep 1; curl -s http://127.0.0.1:5175/health || echo "Daemon aktif"',
+        'desc' => 'Menarik kode terbaru, menginstal library saintifik, migrasi DB, dan otomatis menyalakan engine Python terbaru'
+    ],
+    'install_scientific' => [
+        'label' => '🔬 Install Library Saintifik (SciPy & Scikit-Image)',
+        'cmd' => 'python3 -m pip install scipy scikit-image --no-warn-script-location',
+        'desc' => 'Memasang library saintifik tingkat tinggi untuk akurasi deteksi maksimal dan anti halusinasi'
     ],
     'run_migrate' => [
         'label' => '🗄️ Jalankan Database Migration',
