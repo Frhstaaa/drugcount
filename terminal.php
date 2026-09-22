@@ -62,7 +62,12 @@ $quickCommands = [
     'run_migrate' => [
         'label' => '🗄️ Jalankan Database Migration',
         'cmd' => 'php artisan migrate --force',
-        'desc' => 'Menambahkan kolom tabel baru (seperti user_id multi-user) ke database SQLite'
+        'desc' => 'Menjalankan migrasi database saat ini'
+    ],
+    'migrate_mysql' => [
+        'label' => '🐬 1-Click Pindah & Migrasi ke MySQL',
+        'cmd' => 'php update_mysql.php',
+        'desc' => 'Mengalihkan database ke MySQL (drug_drugcount) dan menyalin data lama otomatis'
     ],
     'start_daemon' => [
         'label' => '🐍 Nyalakan Python Server (:5175)',
