@@ -221,16 +221,41 @@ if (!file_exists($baseDir . '/vendor/autoload.php')) {
 
 // 11. Cek Python & OpenCV
 output("\n11. Memeriksa Python & OpenCV Environment...");
+@chmod($baseDir . '/python', 0755);
+@chmod($baseDir . '/python/detect_pills.py', 0755);
+@chmod($baseDir . '/python/server.py', 0755);
+
 $pythonCmd = 'python3';
 exec('python3 --version 2>&1', $pyOut, $pyRet);
 if ($pyRet !== 0) {
     $pythonCmd = 'python';
+    $pyOut = [];
     exec('python --version 2>&1', $pyOut, $pyRet);
 }
+
 if ($pyRet === 0) {
-    output("  Python terdeteksi: " . implode(' ', $pyOut), 'success');
+    $pyVer = implode(' ', $pyOut);
+    output("  Python terdeteksi: {$pyVer}", 'success');
     output("  Memasang paket requirements.txt...");
     runCommand("{$pythonCmd} -m pip install -r python/requirements.txt --no-warn-script-location");
+
+    // Pastikan PYTHON_BIN tercatat di .env
+    $envContent = file_get_contents($envFile);
+    if (strpos($envContent, 'PYTHON_BIN=') === false) {
+        file_put_contents($envFile, "\nPYTHON_BIN={$pythonCmd}\n", FILE_APPEND);
+        output("  Tercatat PYTHON_BIN={$pythonCmd} ke dalam .env", 'info');
+    }
+
+    // Uji coba eksekusi engine langsung
+    output("  Menguji coba script deteksi Python...");
+    $testOut = [];
+    $testRet = 0;
+    exec("{$pythonCmd} python/detect_pills.py --shape all 2>&1", $testOut, $testRet);
+    if (strpos(implode(' ', $testOut), 'pills') !== false || strpos(implode(' ', $testOut), 'success') !== false) {
+        output("  [OK] Computer Vision Engine berhasil diuji coba!", 'success');
+    } else {
+        output("  Hasil uji coba: " . substr(implode(' ', $testOut), 0, 150), 'info');
+    }
 } else {
     output("  Python3 tidak ditemukan di PATH server. Pastikan Python terinstal di CyberPanel jika ingin menjalankan deteksi di sisi server.", 'warning');
 }

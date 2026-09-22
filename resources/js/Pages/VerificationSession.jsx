@@ -207,7 +207,8 @@ export default function VerificationSession({ stats, recentSessions = [] }) {
             }
         } catch (err) {
             console.error('Detection API error:', err);
-            showToast('Gagal terhubung ke engine deteksi Python.');
+            const serverErrMsg = err.response?.data?.error || err.response?.data?.message;
+            showToast(serverErrMsg || 'Gagal terhubung ke engine deteksi Python di server.');
         } finally {
             setIsDetecting(false);
         }

@@ -11,6 +11,7 @@ Route::get('/settings', [PageController::class, 'settings'])->name('settings');
 
 // Pill Detection and Session Management APIs
 Route::prefix('api')->group(function () {
+    Route::get('/health', [PillDetectorController::class, 'health'])->name('api.health');
     Route::post('/detect', [PillDetectorController::class, 'detect'])->name('api.detect');
     Route::get('/sessions', [PillDetectorController::class, 'list'])->name('api.sessions.list');
     Route::post('/sessions', [PillDetectorController::class, 'store'])->name('api.sessions.store');

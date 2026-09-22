@@ -57,7 +57,7 @@ class PillDetectorController extends Controller
             file_put_contents($tmpFile, $imageB64);
 
             $pythonScript = base_path('python/detect_pills.py');
-            $pythonBin = 'python';
+            $pythonBin = $this->getPythonBinary();
 
             $process = new Process([
                 $pythonBin,
@@ -69,7 +69,7 @@ class PillDetectorController extends Controller
                 '--sensitivity', (string)$sensitivity,
             ]);
 
-            $process->setTimeout(10);
+            $process->setTimeout(15);
             $process->run();
 
             if (file_exists($tmpFile)) {
@@ -77,9 +77,10 @@ class PillDetectorController extends Controller
             }
 
             if (!$process->isSuccessful()) {
+                $err = trim($process->getErrorOutput() ?: $process->getOutput());
                 return response()->json([
                     'success' => false,
-                    'error' => 'Gagal menjalankan deteksi computer vision: ' . $process->getErrorOutput(),
+                    'error' => "Gagal menjalankan deteksi computer vision ({$pythonBin}): " . ($err ?: 'Process failed with exit code ' . $process->getExitCode()),
                 ], 500);
             }
 
@@ -103,6 +104,87 @@ class PillDetectorController extends Controller
                 'error' => 'Kesalahan sistem saat deteksi: ' . $e->getMessage(),
             ], 500);
         }
+    }
+
+    /**
+     * Determine available Python binary on current server environment.
+     */
+    protected function getPythonBinary(): string
+    {
+        if ($envBin = env('PYTHON_BIN')) {
+            return $envBin;
+        }
+
+        $isWindows = (DIRECTORY_SEPARATOR === '\\');
+        $candidates = $isWindows 
+            ? ['python', 'py'] 
+            : ['python3', '/usr/bin/python3', '/usr/local/bin/python3', 'python'];
+
+        foreach ($candidates as $bin) {
+            $cmd = $isWindows ? "where {$bin}" : "which {$bin}";
+            $out = @shell_exec($cmd . ' 2>&1');
+            if ($out && trim($out) !== '' && strpos($out, 'not found') === false) {
+                $lines = explode("\n", trim($out));
+                $first = trim($lines[0]);
+                if (file_exists($first) || !$isWindows) {
+                    return $first;
+                }
+            }
+        }
+
+        return $isWindows ? 'python' : 'python3';
+    }
+
+    /**
+     * Check health status of Python CV engines (Microservice Daemon or Subprocess CLI).
+     */
+    public function health()
+    {
+        $status = [
+            'status' => 'offline',
+            'daemon' => false,
+            'cli' => false,
+            'python_bin' => $this->getPythonBinary(),
+            'version' => null,
+            'message' => '',
+        ];
+
+        // 1. Check Python daemon on port 5175
+        try {
+            $res = Http::timeout(1.2)->get('http://127.0.0.1:5175/health');
+            if ($res->successful() && $res->json('status') === 'online') {
+                $status['status'] = 'online';
+                $status['daemon'] = true;
+                $status['mode'] = 'HTTP Microservice (:5175)';
+                $status['details'] = $res->json();
+                return response()->json($status);
+            }
+        } catch (\Throwable $e) {
+            // Daemon not running, proceed to check CLI
+        }
+
+        // 2. Check Python CLI subprocess
+        try {
+            $pythonBin = $this->getPythonBinary();
+            $process = new Process([$pythonBin, '--version']);
+            $process->setTimeout(3);
+            $process->run();
+
+            if ($process->isSuccessful()) {
+                $verOutput = trim($process->getOutput() ?: $process->getErrorOutput());
+                $status['status'] = 'online';
+                $status['cli'] = true;
+                $status['mode'] = "Python CLI Subprocess ({$pythonBin})";
+                $status['version'] = $verOutput;
+                return response()->json($status);
+            } else {
+                $status['message'] = "Binary {$pythonBin} tidak dapat dijalankan: " . $process->getErrorOutput();
+            }
+        } catch (\Throwable $e) {
+            $status['message'] = $e->getMessage();
+        }
+
+        return response()->json($status, 200);
     }
 
     /**

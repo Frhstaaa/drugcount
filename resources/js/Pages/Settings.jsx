@@ -41,18 +41,33 @@ export default function Settings() {
     const checkEngine = async () => {
         setEngineStatus('checking');
         try {
-            const res = await axios.get('http://127.0.0.1:5175/health', { timeout: 1500 });
+            const res = await axios.get('/api/health', { timeout: 4000 });
             if (res.data?.status === 'online') {
-                setEngineStatus('daemon_online');
-                setEngineInfo(res.data);
-                return;
+                if (res.data?.daemon) {
+                    setEngineStatus('daemon_online');
+                    setEngineInfo(res.data.details || res.data);
+                } else {
+                    setEngineStatus('cli_ready');
+                    setEngineInfo({
+                        status: 'ready',
+                        mode: res.data.mode || `Python CLI (${res.data.python_bin})`,
+                        version: res.data.version || 'OpenCV (CLI)',
+                    });
+                }
+            } else {
+                setEngineStatus('offline');
+                setEngineInfo({
+                    status: 'offline',
+                    mode: 'Tidak Aktif',
+                    version: res.data?.message || 'Periksa instalasi Python di server',
+                });
             }
         } catch (e) {
-            setEngineStatus('cli_ready');
+            setEngineStatus('offline');
             setEngineInfo({
-                status: 'ready',
-                mode: 'Python CLI Subprocess (Bawaan)',
-                version: 'OpenCV 5.0.0',
+                status: 'offline',
+                mode: 'Engine Python Belum Berjalan',
+                version: 'Pastikan Python 3 & requirements.txt sudah terpasang di server',
             });
         }
     };
