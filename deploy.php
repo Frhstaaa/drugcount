@@ -6,6 +6,20 @@
  * - Via Browser: https://your-domain.com/deploy.php?secret=deploy123 (or visit and click Start)
  */
 
+@set_time_limit(600);
+@ini_set('memory_limit', '1024M');
+@ini_set('max_execution_time', '600');
+
+$baseDir = __DIR__;
+$composerHome = $baseDir . '/storage/composer';
+if (!is_dir($composerHome)) {
+    @mkdir($composerHome, 0777, true);
+}
+putenv("HOME={$baseDir}");
+putenv("COMPOSER_HOME={$composerHome}");
+$_ENV['HOME'] = $baseDir;
+$_ENV['COMPOSER_HOME'] = $composerHome;
+
 define('DEPLOY_SECRET', 'deploy123'); // Ganti kata sandi ini jika diinginkan
 $isCli = (php_sapi_name() === 'cli');
 
@@ -161,41 +175,49 @@ output("  Permissions storage dan cache telah diatur ke 0777", 'success');
 
 // 5. Install Composer Dependencies (jika folder vendor belum ada)
 output("\n5. Memeriksa Vendor & Composer Dependencies...");
-if (!is_dir($baseDir . '/vendor')) {
-    output("  Folder vendor belum ada. Menjalankan composer install...", 'warning');
-    runCommand('composer install --no-dev --optimize-autoloader --no-interaction');
+$composerEnv = "COMPOSER_HOME=" . escapeshellarg($composerHome) . " HOME=" . escapeshellarg($baseDir) . " ";
+if (!file_exists($baseDir . '/vendor/autoload.php')) {
+    output("  Folder vendor belum lengkap. Menjalankan composer install...", 'warning');
+    runCommand($composerEnv . 'composer install --no-dev --optimize-autoloader --no-interaction');
 } else {
     output("  Folder vendor sudah terinstal.", 'success');
 }
 
-// 6. Generate APP_KEY jika kosong
-output("\n6. Memeriksa Application Key...");
-$envContent = file_get_contents($envFile);
-if (strpos($envContent, 'APP_KEY=base64:') === false) {
-    output("  APP_KEY kosong. Membuat Application Key baru...", 'info');
-    runCommand('php artisan key:generate --force');
+if (!file_exists($baseDir . '/vendor/autoload.php')) {
+    output("\n[PERINGATAN] Folder vendor/autoload.php belum terbentuk.", 'warning');
+    output("Jika composer di web server memiliki batasan hak akses / timeout, silakan jalankan satu perintah berikut di Terminal CyberPanel / SSH:", 'warning');
+    output("  cd {$baseDir} && composer install --no-dev --optimize-autoloader\n", 'info');
+    output("Setelah itu, jalankan kembali deploy.php untuk menyelesaikan setup otomatis.", 'info');
 } else {
-    output("  APP_KEY sudah terkonfigurasi.", 'success');
+    // 6. Generate APP_KEY jika kosong
+    output("\n6. Memeriksa Application Key...");
+    $envContent = file_get_contents($envFile);
+    if (strpos($envContent, 'APP_KEY=base64:') === false) {
+        output("  APP_KEY kosong. Membuat Application Key baru...", 'info');
+        runCommand('php artisan key:generate --force');
+    } else {
+        output("  APP_KEY sudah terkonfigurasi.", 'success');
+    }
+
+    // 7. Storage Link
+    output("\n7. Menghubungkan Storage Link...");
+    runCommand('php artisan storage:link');
+
+    // 8. Jalankan Database Migration
+    output("\n8. Menjalankan Database Migrations...");
+    runCommand('php artisan migrate --force');
+
+    // 9. Jalankan Database Seeder (jika belum ada data sesi)
+    output("\n9. Memeriksa Data Awal...");
+    runCommand('php artisan db:seed --class=CountingSessionSeeder --force');
+
+    // 10. Optimasi Cache Laravel
+    output("\n10. Mengoptimasi Cache Laravel...");
+    runCommand('php artisan optimize:clear');
+    runCommand('php artisan config:cache');
+    runCommand('php artisan route:cache');
+    runCommand('php artisan view:cache');
 }
-
-// 7. Storage Link
-output("\n7. Menghubungkan Storage Link...");
-runCommand('php artisan storage:link');
-
-// 8. Jalankan Database Migration
-output("\n8. Menjalankan Database Migrations...");
-runCommand('php artisan migrate --force');
-
-// 9. Jalankan Database Seeder (jika belum ada data sesi)
-output("\n9. Memeriksa Data Awal...");
-runCommand('php artisan db:seed --class=CountingSessionSeeder --force');
-
-// 10. Optimasi Cache Laravel
-output("\n10. Mengoptimasi Cache Laravel...");
-runCommand('php artisan optimize:clear');
-runCommand('php artisan config:cache');
-runCommand('php artisan route:cache');
-runCommand('php artisan view:cache');
 
 // 11. Cek Python & OpenCV
 output("\n11. Memeriksa Python & OpenCV Environment...");

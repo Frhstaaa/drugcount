@@ -8,6 +8,20 @@
  * - Via Browser: https://your-domain.com/update.php?secret=deploy123
  */
 
+@set_time_limit(600);
+@ini_set('memory_limit', '1024M');
+@ini_set('max_execution_time', '600');
+
+$baseDir = __DIR__;
+$composerHome = $baseDir . '/storage/composer';
+if (!is_dir($composerHome)) {
+    @mkdir($composerHome, 0777, true);
+}
+putenv("HOME={$baseDir}");
+putenv("COMPOSER_HOME={$composerHome}");
+$_ENV['HOME'] = $baseDir;
+$_ENV['COMPOSER_HOME'] = $composerHome;
+
 define('UPDATE_SECRET', 'deploy123'); // Ganti kata sandi ini jika diinginkan
 $isCli = (php_sapi_name() === 'cli');
 
@@ -109,7 +123,8 @@ if (is_dir($baseDir . '/.git')) {
 
 // 2. Composer Install (jika ada pembaruan paket PHP)
 output("\n2. Memeriksa Kebutuhan Paket Composer...");
-runCommand('composer install --no-dev --optimize-autoloader --no-interaction');
+$composerEnv = "COMPOSER_HOME=" . escapeshellarg($composerHome) . " HOME=" . escapeshellarg($baseDir) . " ";
+runCommand($composerEnv . 'composer install --no-dev --optimize-autoloader --no-interaction');
 
 // 3. Jalankan Database Migrations
 output("\n3. Memeriksa & Menjalankan Migrasi Database...");
