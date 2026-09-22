@@ -2,13 +2,12 @@
 """
 PillCount Computer Vision Engine
 High-precision automated pill detection & counting using OpenCV
-Features:
-- Rigorous false-positive rejection (faces, hands, rooms, clutter -> 0 pills)
-- Local background ring contrast validation (pills must contrast against flat tray)
-- Strict morphological geometry (Tablets: circularity>=0.68, solidity>=0.88; Capsules: AR 1.45-3.6, solidity>=0.86)
-- Physical pharmaceutical size bounds (Area: 140 - 7500 px, max dimension <= 120 px)
-- Outlier filtering by cluster median
-- Quality diagnostics (Laplacian blur score, lighting analysis)
+
+Hybrid Multi-Strategy Engine:
+1. Dual-Threshold Watershed & Morphology (Loose pills & capsules on counting trays)
+2. Circular Hough Transform with Spatial-Intensity Clustering (Blister packs / foil strips & round tablets)
+3. Non-Maximum Suppression (NMS) & Multi-level False-Positive Rejection (Faces, hands, clutter -> 0)
+4. Quality diagnostics (Blur, lighting analysis)
 """
 
 import sys
@@ -43,15 +42,15 @@ def analyze_image_quality(gray):
     mean_val = float(np.mean(gray))
     std_val = float(np.std(gray))
 
-    if mean_val < 40:
+    if mean_val < 35:
         lighting = "terlalu_gelap"
         lighting_msg = "Pencahayaan terlalu gelap. Nyalakan senter atau tambah cahaya."
-    elif mean_val > 230:
+    elif mean_val > 235:
         lighting = "terlalu_terang"
         lighting_msg = "Pencahayaan terlalu silau/overexposed."
-    elif std_val < 25:
+    elif std_val < 20:
         lighting = "kontras_rendah"
-        lighting_msg = "Kontras antara obat dan nampan kurang jelas."
+        lighting_msg = "Kontras antara obat dan latar belakang kurang jelas."
     else:
         lighting = "optimal"
         lighting_msg = "Pencahayaan dan kontras optimal."
@@ -69,23 +68,23 @@ def analyze_image_quality(gray):
 def classify_pill_shape(contour, approx, aspect_ratio, circularity, solidity, area):
     """
     Classify pill based on morphological geometry with strict rejection:
-    - Tablet: circular or slightly oval (aspect ratio <= 1.42, high circularity >= 0.68, solidity >= 0.88)
-    - Capsule: elongated shape (aspect ratio 1.45 - 3.6, circularity >= 0.45, solidity >= 0.86)
-    - Racikan: irregular contours of broken tablets (circularity >= 0.58, solidity >= 0.82, area <= 3000)
-    Returns: (shape_type, confidence) or (None, 0.0) if not a valid pill.
+    - Tablet: circular or slightly oval (aspect ratio <= 1.45, circularity >= 0.65, solidity >= 0.85)
+    - Capsule: elongated shape (aspect ratio 1.45 - 3.8, circularity >= 0.40, solidity >= 0.84)
+    - Racikan: irregular contours of broken tablets (circularity >= 0.55, solidity >= 0.80, area <= 3500)
     """
-    if circularity >= 0.68 and solidity >= 0.88 and aspect_ratio <= 1.42:
+    if circularity >= 0.65 and solidity >= 0.85 and aspect_ratio <= 1.45:
         return "tablet", 0.98
-    elif solidity >= 0.86 and 1.45 <= aspect_ratio <= 3.6 and circularity >= 0.45:
+    elif solidity >= 0.84 and 1.45 <= aspect_ratio <= 3.8 and circularity >= 0.40:
         return "capsule", 0.96
-    elif solidity >= 0.82 and circularity >= 0.58 and area <= 3000 and aspect_ratio <= 2.2:
+    elif solidity >= 0.80 and circularity >= 0.55 and area <= 3500 and aspect_ratio <= 2.2:
         return "racikan", 0.86
     return None, 0.0
 
 
 def detect_pills(image, shape_filter="all", min_area=140, max_area=7500, sensitivity=50):
     """
-    Detect genuine pharmaceutical pills with strict false-positive rejection.
+    Detect genuine pharmaceutical pills with hybrid contour-watershed and Hough circle detection.
+    Accurately detects both loose pills on trays AND pills in blister packs / strips.
     """
     orig_h, orig_w = image.shape[:2]
 
@@ -108,10 +107,15 @@ def detect_pills(image, shape_filter="all", min_area=140, max_area=7500, sensiti
     denoised = cv2.bilateralFilter(gray, d=7, sigmaColor=50, sigmaSpace=50)
 
     # Enhance contrast using CLAHE
-    clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+    clahe = cv2.createCLAHE(clipLimit=2.2, tileGridSize=(8, 8))
     enhanced = clahe.apply(denoised)
 
-    # Estimate background polarity from image borders
+    candidate_pills = []
+
+    # ==========================================
+    # STRATEGY 1: Watershed & Morphological Contours
+    # (Ideal for loose pills, colored capsules & trays)
+    # ==========================================
     border_pixels = np.concatenate([
         enhanced[0:12, :].flatten(),
         enhanced[-12:, :].flatten(),
@@ -120,144 +124,211 @@ def detect_pills(image, shape_filter="all", min_area=140, max_area=7500, sensiti
     ])
     bg_intensity = np.median(border_pixels)
 
-    if bg_intensity < 120:
-        # Dark background (e.g. blue/black medical tray) -> light pills
-        _, binary = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    else:
-        # Light background (e.g. white tray/paper) -> dark pills
-        _, binary = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    thresh_type = cv2.THRESH_BINARY if bg_intensity < 120 else cv2.THRESH_BINARY_INV
+    _, binary = cv2.threshold(enhanced, 0, 255, thresh_type + cv2.THRESH_OTSU)
 
-    # Morphological cleaning
     k_size = 3 if sensitivity > 60 else 5
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_size, k_size))
     cleaned = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=1)
     cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_CLOSE, kernel, iterations=2)
 
-    # Distance transform identifies peaks of pill centers
     dist_transform = cv2.distanceTransform(cleaned, cv2.DIST_L2, 5)
-    if dist_transform.max() == 0:
-        return {
-            "success": True,
-            "count": 0,
-            "shape_filter": shape_filter,
-            "pills": [],
-            "quality": quality,
-            "annotated_image": None,
-            "image_size": {"width": orig_w, "height": orig_h}
-        }
+    if dist_transform.max() > 0:
+        thresh_factor = max(0.30, min(0.65, 0.65 - (sensitivity / 100.0) * 0.35))
+        _, sure_fg = cv2.threshold(dist_transform, thresh_factor * dist_transform.max(), 255, 0)
+        sure_fg = np.uint8(sure_fg)
 
-    thresh_factor = max(0.30, min(0.65, 0.65 - (sensitivity / 100.0) * 0.35))
-    _, sure_fg = cv2.threshold(dist_transform, thresh_factor * dist_transform.max(), 255, 0)
-    sure_fg = np.uint8(sure_fg)
+        sure_bg = cv2.dilate(cleaned, kernel, iterations=3)
+        unknown = cv2.subtract(sure_bg, sure_fg)
 
-    sure_bg = cv2.dilate(cleaned, kernel, iterations=3)
-    unknown = cv2.subtract(sure_bg, sure_fg)
+        num_markers, markers = cv2.connectedComponents(sure_fg)
+        markers = markers + 1
+        markers[unknown == 255] = 0
 
-    num_markers, markers = cv2.connectedComponents(sure_fg)
-    markers = markers + 1
-    markers[unknown == 255] = 0
+        watershed_img = proc_img.copy()
+        markers = cv2.watershed(watershed_img, markers)
 
-    watershed_img = proc_img.copy()
-    markers = cv2.watershed(watershed_img, markers)
+        scaled_min_area = max(100.0, float(min_area) * (scale * scale))
+        scaled_max_area = min(float(proc_w * proc_h * 0.035), float(max_area) * (scale * scale), 7500.0)
+        max_dim_px = int(130 * scale)
+        min_dim_px = int(10 * scale)
 
-    # Physical pill size bounds (scaled)
-    # A pill should NEVER exceed 2.2% of total screen or 7500 pixels
-    scaled_min_area = max(130.0, float(min_area) * (scale * scale))
-    scaled_max_area = min(float(proc_w * proc_h * 0.022), float(max_area) * (scale * scale), 7500.0)
-    max_dim_px = int(120 * scale)
-    min_dim_px = int(11 * scale)
+        for label in range(2, num_markers + 1):
+            mask = np.zeros(cleaned.shape, dtype=np.uint8)
+            mask[markers == label] = 255
 
-    candidate_pills = []
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if not contours:
+                continue
 
-    for label in range(2, num_markers + 1):
-        mask = np.zeros(cleaned.shape, dtype=np.uint8)
-        mask[markers == label] = 255
+            c = max(contours, key=cv2.contourArea)
+            area = cv2.contourArea(c)
 
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if not contours:
-            continue
+            if area < scaled_min_area or area > scaled_max_area:
+                continue
 
-        c = max(contours, key=cv2.contourArea)
-        area = cv2.contourArea(c)
+            x, y, w, h = cv2.boundingRect(c)
+            if w > max_dim_px or h > max_dim_px or min(w, h) < min_dim_px:
+                continue
 
-        # 1. Strict area check
-        if area < scaled_min_area or area > scaled_max_area:
-            continue
+            peri = cv2.arcLength(c, True)
+            if peri == 0:
+                continue
+            circularity = 4 * np.pi * (area / (peri * peri))
 
-        # 2. Bounding dimensions check
-        x, y, w, h = cv2.boundingRect(c)
-        if w > max_dim_px or h > max_dim_px or min(w, h) < min_dim_px:
-            continue
+            hull = cv2.convexHull(c)
+            hull_area = cv2.contourArea(hull)
+            solidity = float(area) / hull_area if hull_area > 0 else 0
+            aspect_ratio = float(max(w, h)) / max(min(w, h), 1)
 
-        peri = cv2.arcLength(c, True)
-        if peri == 0:
-            continue
-        circularity = 4 * np.pi * (area / (peri * peri))
+            dilated_mask = cv2.dilate(mask, kernel, iterations=2)
+            ring_mask = cv2.subtract(dilated_mask, mask)
+            mean_inside = cv2.mean(enhanced, mask=mask)[0]
+            mean_ring = cv2.mean(enhanced, mask=ring_mask)[0]
+            local_contrast = abs(mean_inside - mean_ring)
 
-        hull = cv2.convexHull(c)
-        hull_area = cv2.contourArea(hull)
-        solidity = float(area) / hull_area if hull_area > 0 else 0
-        aspect_ratio = float(max(w, h)) / max(min(w, h), 1)
+            if local_contrast < 16.0:
+                continue
 
-        # 3. Local background ring contrast check (must stand out sharply from tray)
-        dilated_mask = cv2.dilate(mask, kernel, iterations=2)
-        ring_mask = cv2.subtract(dilated_mask, mask)
-        mean_inside = cv2.mean(enhanced, mask=mask)[0]
-        mean_ring = cv2.mean(enhanced, mask=ring_mask)[0]
-        local_contrast = abs(mean_inside - mean_ring)
+            inside_std = cv2.meanStdDev(enhanced, mask=mask)[1][0][0]
+            if inside_std > 38.0:
+                continue
 
-        # A real pill has sharp contrast (>= 22 intensity units) against tray
-        if local_contrast < 22.0:
-            continue
+            approx = cv2.approxPolyDP(c, 0.03 * peri, True)
+            shape_type, conf = classify_pill_shape(c, approx, aspect_ratio, circularity, solidity, area)
+            if not shape_type:
+                continue
 
-        # 4. Internal texture consistency (pills have low internal variance)
-        inside_std = cv2.meanStdDev(enhanced, mask=mask)[1][0][0]
-        if inside_std > 42.0:
-            # High internal variance means textured face/hair/fabric, not a solid pill
-            continue
+            if shape_filter == "tablet" and shape_type != "tablet":
+                continue
+            elif shape_filter == "capsule" and shape_type != "capsule":
+                continue
+            elif shape_filter == "racikan" and shape_type != "racikan":
+                continue
 
-        # 5. Strict shape classification
-        approx = cv2.approxPolyDP(c, 0.03 * peri, True)
-        shape_type, conf = classify_pill_shape(c, approx, aspect_ratio, circularity, solidity, area)
-        if not shape_type:
-            continue
+            M = cv2.moments(c)
+            if M["m00"] > 0:
+                cx = int(M["m10"] / M["m00"])
+                cy = int(M["m01"] / M["m00"])
+            else:
+                cx = x + w // 2
+                cy = y + h // 2
 
-        if shape_filter == "tablet" and shape_type != "tablet":
-            continue
-        elif shape_filter == "capsule" and shape_type != "capsule":
-            continue
-        elif shape_filter == "racikan" and shape_type != "racikan":
-            continue
+            candidate_pills.append({
+                "x": x, "y": y, "w": w, "h": h,
+                "cx": cx, "cy": cy,
+                "r": int(max(w, h) / 2),
+                "area": area,
+                "circularity": circularity,
+                "solidity": solidity,
+                "aspect_ratio": aspect_ratio,
+                "shape": shape_type,
+                "confidence": conf,
+                "contrast": local_contrast,
+                "source": "watershed"
+            })
 
-        M = cv2.moments(c)
-        if M["m00"] > 0:
-            cx = int(M["m10"] / M["m00"])
-            cy = int(M["m01"] / M["m00"])
-        else:
-            cx = x + w // 2
-            cy = y + h // 2
+    # ==========================================
+    # STRATEGY 2: Circular Hough Transform for Blister Strips & Circular Tablets
+    # (Solves pills in silver/transparent blister packs & reflective trays)
+    # ==========================================
+    if shape_filter in ["all", "tablet"]:
+        blurred = cv2.GaussianBlur(gray, (7, 7), 1.5)
+        min_r = int(11 * scale)
+        max_r = int(42 * scale)
 
-        candidate_pills.append({
-            "c": c,
-            "x": x, "y": y, "w": w, "h": h,
-            "cx": cx, "cy": cy,
-            "area": area,
-            "circularity": circularity,
-            "solidity": solidity,
-            "aspect_ratio": aspect_ratio,
-            "shape": shape_type,
-            "confidence": conf,
-            "contrast": local_contrast
-        })
+        # Multi-threshold search
+        hough_circles = None
+        for p2 in [26, 24, 22]:
+            hc = cv2.HoughCircles(
+                blurred, cv2.HOUGH_GRADIENT,
+                dp=1.1, minDist=int(20 * scale),
+                param1=60, param2=p2,
+                minRadius=min_r, maxRadius=max_r
+            )
+            if hc is not None and len(hc[0]) >= 2:
+                hough_circles = hc
+                break
 
-    # 6. Outlier filtering by cluster median (for batch consistency)
+        if hough_circles is not None:
+            valid_hough = []
+            for c in hough_circles[0]:
+                hcx, hcy, hr = int(c[0]), int(c[1]), int(c[2])
+                if hcx - hr < 0 or hcy - hr < 0 or hcx + hr >= proc_w or hcy + hr >= proc_h:
+                    continue
+
+                mask = np.zeros(gray.shape, dtype=np.uint8)
+                cv2.circle(mask, (hcx, hcy), hr, 255, -1)
+                mean_val = cv2.mean(gray, mask=mask)[0]
+                std_val = cv2.meanStdDev(gray, mask=mask)[1][0][0]
+
+                # Pills have smooth surface (low std) and are not pure black shadow
+                if std_val < 26.0 and mean_val > 80:
+                    valid_hough.append({
+                        "cx": hcx, "cy": hcy, "r": hr,
+                        "mean": mean_val, "std": std_val
+                    })
+
+            # Filter out non-pill outliers by cluster median
+            if len(valid_hough) >= 3:
+                means = [vh["mean"] for vh in valid_hough]
+                med_mean = np.median(means)
+                radii = [vh["r"] for vh in valid_hough]
+                med_r = np.median(radii)
+
+                for vh in valid_hough:
+                    if abs(vh["mean"] - med_mean) < 45 and 0.6 * med_r <= vh["r"] <= 1.45 * med_r:
+                        overlap = False
+                        for p in candidate_pills:
+                            dist_sq = (p["cx"] - vh["cx"])**2 + (p["cy"] - vh["cy"])**2
+                            if dist_sq < (vh["r"] * 0.8)**2:
+                                overlap = True
+                                break
+                        if not overlap:
+                            r = vh["r"]
+                            candidate_pills.append({
+                                "x": vh["cx"] - r, "y": vh["cy"] - r,
+                                "w": 2 * r, "h": 2 * r,
+                                "cx": vh["cx"], "cy": vh["cy"],
+                                "r": r,
+                                "area": int(np.pi * r * r),
+                                "circularity": 0.95,
+                                "solidity": 0.95,
+                                "aspect_ratio": 1.0,
+                                "shape": "tablet",
+                                "confidence": 0.96,
+                                "contrast": 25.0,
+                                "source": "hough"
+                            })
+            elif len(valid_hough) in [1, 2]:
+                for vh in valid_hough:
+                    overlap = any((p["cx"] - vh["cx"])**2 + (p["cy"] - vh["cy"])**2 < (vh["r"] * 0.8)**2 for p in candidate_pills)
+                    if not overlap:
+                        r = vh["r"]
+                        candidate_pills.append({
+                            "x": vh["cx"] - r, "y": vh["cy"] - r,
+                            "w": 2 * r, "h": 2 * r,
+                            "cx": vh["cx"], "cy": vh["cy"],
+                            "r": r,
+                            "area": int(np.pi * r * r),
+                            "circularity": 0.95,
+                            "solidity": 0.95,
+                            "aspect_ratio": 1.0,
+                            "shape": "tablet",
+                            "confidence": 0.92,
+                            "contrast": 25.0,
+                            "source": "hough"
+                        })
+
+    # ==========================================
+    # STRATEGY 3: Outlier Size Filtering
+    # ==========================================
     if len(candidate_pills) >= 4:
         areas = [p["area"] for p in candidate_pills]
         median_area = np.median(areas)
-        # Filter extreme size outliers (pills of same medicine have similar size)
         filtered_candidates = [
             p for p in candidate_pills
-            if 0.25 * median_area <= p["area"] <= 3.2 * median_area
+            if 0.20 * median_area <= p["area"] <= 3.8 * median_area
         ]
     else:
         filtered_candidates = candidate_pills
@@ -274,7 +345,7 @@ def detect_pills(image, shape_filter="all", min_area=140, max_area=7500, sensiti
         orig_h_val = int(pill["h"] / scale)
         orig_cx = int(pill["cx"] / scale)
         orig_cy = int(pill["cy"] / scale)
-        radius = int(max(pill["w"], pill["h"]) / 2)
+        radius = int(pill["r"] / scale)
 
         detected_pills.append({
             "id": idx,
@@ -284,7 +355,7 @@ def detect_pills(image, shape_filter="all", min_area=140, max_area=7500, sensiti
             "height": orig_h_val,
             "cx": orig_cx,
             "cy": orig_cy,
-            "radius": int(radius / scale),
+            "radius": radius,
             "shape": pill["shape"],
             "confidence": round(pill["confidence"], 2),
             "area": int(pill["area"] / (scale * scale)),
@@ -294,8 +365,8 @@ def detect_pills(image, shape_filter="all", min_area=140, max_area=7500, sensiti
 
         cx, cy = pill["cx"], pill["cy"]
         # Mint cyan ring (BGR: 203, 216, 107 in hex #6bd8cb)
-        cv2.circle(overlay, (cx, cy), max(radius + 4, 15), (203, 216, 107), 2)
-        cv2.circle(overlay, (cx, cy), max(radius + 2, 13), (203, 216, 107), -1)
+        cv2.circle(overlay, (cx, cy), max(pill["r"] + 3, 15), (203, 216, 107), 2)
+        cv2.circle(overlay, (cx, cy), max(pill["r"] + 1, 13), (203, 216, 107), -1)
         # Fluorescent lime center dot (BGR: 45, 222, 148 in hex #94de2d)
         cv2.circle(annotated, (cx, cy), 3, (45, 222, 148), -1)
 
@@ -306,8 +377,8 @@ def detect_pills(image, shape_filter="all", min_area=140, max_area=7500, sensiti
         thickness = 1
         (tw, th), _ = cv2.getTextSize(badge_text, font, font_scale, thickness)
 
-        badge_x = min(cx + radius + 4, proc_w - tw - 8)
-        badge_y = max(cy - radius - 2, th + 6)
+        badge_x = min(cx + pill["r"] + 4, proc_w - tw - 8)
+        badge_y = max(cy - pill["r"] - 2, th + 6)
 
         cv2.rectangle(annotated, (badge_x - 3, badge_y - th - 3), (badge_x + tw + 3, badge_y + 3), (34, 26, 11), -1)
         cv2.rectangle(annotated, (badge_x - 3, badge_y - th - 3), (badge_x + tw + 3, badge_y + 3), (203, 216, 107), 1)
@@ -348,55 +419,62 @@ def load_image(image_input):
             pass
 
     if image_input.startswith("data:image"):
-        try:
-            header, encoded = image_input.split(",", 1)
-            data = base64.b64decode(encoded)
-            nparr = np.frombuffer(data, np.uint8)
-            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-            if img is not None:
-                return img
-        except Exception:
-            pass
+        image_data = image_input.split(",")[1]
+    else:
+        image_data = image_input
 
     try:
-        data = base64.b64decode(image_input)
-        nparr = np.frombuffer(data, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        if img is not None:
-            return img
-    except Exception:
-        pass
-
-    raise ValueError(f"Cannot load image from input: {str(image_input)[:50]}...")
+        decoded = base64.b64decode(image_data)
+        np_arr = np.frombuffer(decoded, np.uint8)
+        img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+        return img
+    except Exception as e:
+        sys.stderr.write(f"Error decoding image: {e}\n")
+        return None
 
 
 def main():
-    parser = argparse.ArgumentParser(description="PillCount Computer Vision Engine")
-    parser.add_argument("--image", required=True, help="Path to image file or base64 string")
-    parser.add_argument("--shape", default="all", choices=["all", "tablet", "capsule", "racikan"], help="Shape filter")
-    parser.add_argument("--min-area", type=int, default=140, help="Minimum pill contour area")
-    parser.add_argument("--max-area", type=int, default=7500, help="Maximum pill contour area")
+    parser = argparse.ArgumentParser(description="PillCount AI CV Detection Engine")
+    parser.add_argument("--image", type=str, help="Path to image file or base64 data")
+    parser.add_argument("--shape", type=str, default="all", choices=["all", "tablet", "capsule", "racikan"], help="Filter by pill shape")
+    parser.add_argument("--min-area", type=int, default=140, help="Minimum pill area in pixels")
+    parser.add_argument("--max-area", type=int, default=7500, help="Maximum pill area in pixels")
     parser.add_argument("--sensitivity", type=int, default=50, help="Detection sensitivity (1-100)")
+    parser.add_argument("--output", type=str, help="Optional path to save annotated image")
 
     args = parser.parse_args()
 
-    try:
-        image = load_image(args.image)
-        if image is None:
-            print(json.dumps({"success": False, "error": "Failed to decode image"}))
+    # Read from stdin if --image not provided
+    if not args.image:
+        input_data = sys.stdin.read().strip()
+        if not input_data:
+            print(json.dumps({"success": False, "error": "No image input provided"}))
             sys.exit(1)
+        image = load_image(input_data)
+    else:
+        image = load_image(args.image)
 
-        result = detect_pills(
-            image,
-            shape_filter=args.shape,
-            min_area=args.min_area,
-            max_area=args.max_area,
-            sensitivity=args.sensitivity
-        )
-        print(json.dumps(result))
-    except Exception as e:
-        print(json.dumps({"success": False, "error": str(e)}))
+    if image is None:
+        print(json.dumps({"success": False, "error": "Failed to decode image input"}))
         sys.exit(1)
+
+    result = detect_pills(
+        image,
+        shape_filter=args.shape,
+        min_area=args.min_area,
+        max_area=args.max_area,
+        sensitivity=args.sensitivity
+    )
+
+    if args.output and result.get("annotated_image"):
+        try:
+            b64_data = result["annotated_image"].split(",")[1]
+            with open(args.output, "wb") as f:
+                f.write(base64.b64decode(b64_data))
+        except Exception as e:
+            sys.stderr.write(f"Warning: Failed to save output image: {e}\n")
+
+    print(json.dumps(result))
 
 
 if __name__ == "__main__":
