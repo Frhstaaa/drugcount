@@ -30,9 +30,9 @@ class PillDetectorController extends Controller
         $sensitivity = $validated['sensitivity'] ?? 50;
         $imageB64 = $validated['image'];
 
-        // Option 1: Try local Python microservice (port 5175) for sub-50ms ultra-low latency
+        // Option 1: Try local Python microservice (port 5175) for ultra-low latency
         try {
-            $response = Http::timeout(2.5)->post('http://127.0.0.1:5175/detect', [
+            $response = Http::timeout(20.0)->post('http://127.0.0.1:5175/detect', [
                 'image' => $imageB64,
                 'shape' => $shape,
                 'min_area' => $minArea,
@@ -128,6 +128,17 @@ class PillDetectorController extends Controller
     {
         if ($envBin = env('PYTHON_BIN')) {
             return $envBin;
+        }
+
+        // Check isolated virtual environment first (guaranteed compatible NumPy 1.x)
+        $venvLinux = base_path('python/venv/bin/python');
+        if (file_exists($venvLinux)) {
+            return $venvLinux;
+        }
+
+        $venvWin = base_path('python/venv/Scripts/python.exe');
+        if (file_exists($venvWin)) {
+            return $venvWin;
         }
 
         $isWindows = (DIRECTORY_SEPARATOR === '\\');
