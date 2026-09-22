@@ -1,0 +1,237 @@
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\CountingSession;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
+use Symfony\Component\Process\Process;
+
+class PillDetectorController extends Controller
+{
+    /**
+     * Run Python pill detection on an incoming webcam image frame.
+     */
+    public function detect(Request $request)
+    {
+        $validated = $request->validate([
+            'image' => 'required|string',
+            'shape' => 'nullable|string|in:all,tablet,capsule,racikan',
+            'min_area' => 'nullable|integer|min:20|max:10000',
+            'max_area' => 'nullable|integer|min:500|max:200000',
+            'sensitivity' => 'nullable|integer|min:1|max:100',
+        ]);
+
+        $shape = $validated['shape'] ?? 'all';
+        $minArea = $validated['min_area'] ?? 120;
+        $maxArea = $validated['max_area'] ?? 120000;
+        $sensitivity = $validated['sensitivity'] ?? 50;
+        $imageB64 = $validated['image'];
+
+        // Option 1: Try local Python microservice (port 5175) for sub-50ms ultra-low latency
+        try {
+            $response = Http::timeout(2.5)->post('http://127.0.0.1:5175/detect', [
+                'image' => $imageB64,
+                'shape' => $shape,
+                'min_area' => $minArea,
+                'max_area' => $maxArea,
+                'sensitivity' => $sensitivity,
+            ]);
+
+            if ($response->successful()) {
+                $data = $response->json();
+                if (!empty($data['success'])) {
+                    $data['engine'] = 'python_daemon';
+                    return response()->json($data);
+                }
+            }
+        } catch (\Throwable $e) {
+            // Daemon not running or timed out, gracefully fallback to CLI execution below
+        }
+
+        // Option 2: Direct CLI execution via python detect_pills.py
+        try {
+            $tmpFile = tempnam(sys_get_temp_dir(), 'pill_img_') . '.txt';
+            file_put_contents($tmpFile, $imageB64);
+
+            $pythonScript = base_path('python/detect_pills.py');
+            $pythonBin = 'python';
+
+            $process = new Process([
+                $pythonBin,
+                $pythonScript,
+                '--image', $tmpFile,
+                '--shape', $shape,
+                '--min-area', (string)$minArea,
+                '--max-area', (string)$maxArea,
+                '--sensitivity', (string)$sensitivity,
+            ]);
+
+            $process->setTimeout(10);
+            $process->run();
+
+            if (file_exists($tmpFile)) {
+                @unlink($tmpFile);
+            }
+
+            if (!$process->isSuccessful()) {
+                return response()->json([
+                    'success' => false,
+                    'error' => 'Gagal menjalankan deteksi computer vision: ' . $process->getErrorOutput(),
+                ], 500);
+            }
+
+            $output = $process->getOutput();
+            $data = json_decode($output, true);
+
+            if (json_last_error() !== JSON_ERROR_NONE || empty($data)) {
+                return response()->json([
+                    'success' => false,
+                    'error' => 'Format output dari deteksi Python tidak valid.',
+                    'raw_output' => substr($output, 0, 500),
+                ], 500);
+            }
+
+            $data['engine'] = 'python_cli';
+            return response()->json($data);
+
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'error' => 'Kesalahan sistem saat deteksi: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Store a verified pill counting session with snapshot and metadata.
+     */
+    public function store(Request $request)
+    {
+        $validated = $request->validate([
+            'prescription_no' => 'nullable|string|max:100',
+            'medicine_name' => 'required|string|max:255',
+            'pharmacist_name' => 'nullable|string|max:255',
+            'shape_filter' => 'nullable|string|max:50',
+            'auto_count' => 'required|integer|min:0',
+            'manual_count' => 'required|integer|min:0',
+            'confidence_score' => 'nullable|numeric',
+            'lighting_quality' => 'nullable|string|max:50',
+            'blur_score' => 'nullable|numeric',
+            'raw_image' => 'nullable|string', // base64
+            'annotated_image' => 'nullable|string', // base64
+            'detected_items' => 'nullable|array',
+            'notes' => 'nullable|string|max:1000',
+        ]);
+
+        $rawPath = null;
+        $annotatedPath = null;
+
+        // Save raw image snapshot
+        if (!empty($validated['raw_image'])) {
+            $rawPath = $this->saveBase64Image($validated['raw_image'], 'raw_');
+        }
+
+        // Save annotated image snapshot
+        if (!empty($validated['annotated_image'])) {
+            $annotatedPath = $this->saveBase64Image($validated['annotated_image'], 'annotated_');
+        }
+
+        $session = CountingSession::create([
+            'prescription_no' => $validated['prescription_no'] ?? ('RX-' . strtoupper(Str::random(6))),
+            'medicine_name' => $validated['medicine_name'],
+            'pharmacist_name' => $validated['pharmacist_name'] ?? 'Petugas Farmasi',
+            'shape_filter' => $validated['shape_filter'] ?? 'all',
+            'auto_count' => $validated['auto_count'],
+            'manual_count' => $validated['manual_count'],
+            'confidence_score' => $validated['confidence_score'] ?? 98.5,
+            'lighting_quality' => $validated['lighting_quality'] ?? 'optimal',
+            'blur_score' => $validated['blur_score'] ?? null,
+            'image_path' => $rawPath,
+            'annotated_image_path' => $annotatedPath,
+            'detected_items' => $validated['detected_items'] ?? [],
+            'notes' => $validated['notes'] ?? null,
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Sesi verifikasi hitung obat berhasil disimpan.',
+            'session' => $session,
+        ]);
+    }
+
+    /**
+     * List past counting sessions.
+     */
+    public function list(Request $request)
+    {
+        $query = CountingSession::query()->orderBy('created_at', 'desc');
+
+        if ($request->filled('search')) {
+            $search = $request->input('search');
+            $query->where(function ($q) use ($search) {
+                $q->where('medicine_name', 'like', "%{$search}%")
+                  ->orWhere('prescription_no', 'like', "%{$search}%")
+                  ->orWhere('pharmacist_name', 'like', "%{$search}%");
+            });
+        }
+
+        if ($request->filled('shape') && $request->input('shape') !== 'all') {
+            $query->where('shape_filter', $request->input('shape'));
+        }
+
+        $sessions = $query->paginate(15);
+
+        return response()->json($sessions);
+    }
+
+    /**
+     * Delete a counting session.
+     */
+    public function destroy($id)
+    {
+        $session = CountingSession::findOrFail($id);
+
+        if ($session->image_path && Storage::disk('public')->exists(str_replace('/storage/', '', $session->image_path))) {
+            Storage::disk('public')->delete(str_replace('/storage/', '', $session->image_path));
+        }
+        if ($session->annotated_image_path && Storage::disk('public')->exists(str_replace('/storage/', '', $session->annotated_image_path))) {
+            Storage::disk('public')->delete(str_replace('/storage/', '', $session->annotated_image_path));
+        }
+
+        $session->delete();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Riwayat sesi hitung berhasil dihapus.',
+        ]);
+    }
+
+    /**
+     * Helper to save base64 image data into storage.
+     */
+    protected function saveBase64Image(string $base64Data, string $prefix): string
+    {
+        if (preg_match('/^data:image\/(\w+);base64,/', $base64Data, $type)) {
+            $data = substr($base64Data, strpos($base64Data, ',') + 1);
+            $type = strtolower($type[1]); // jpg, png, jpeg
+            if ($type === 'jpeg') $type = 'jpg';
+            $data = base64_decode($data);
+            if ($data === false) {
+                return '';
+            }
+        } else {
+            $data = base64_decode($base64Data);
+            $type = 'jpg';
+        }
+
+        $filename = $prefix . date('Ymd_His') . '_' . Str::random(6) . '.' . $type;
+        $path = 'sessions/' . $filename;
+
+        Storage::disk('public')->put($path, $data);
+
+        return '/storage/' . $path;
+    }
+}
