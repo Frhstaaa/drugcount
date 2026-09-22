@@ -80,44 +80,88 @@ export default function VerificationSession({ stats, recentSessions = [] }) {
                 stream.getTracks().forEach((track) => track.stop());
             }
 
-            const constraints = {
-                video: {
-                    facingMode: { ideal: facing },
-                    width: { ideal: 1280 },
-                    height: { ideal: 720 },
-                },
-                audio: false,
-            };
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                console.warn('getUserMedia tidak didukung pada browser ini.');
+                setHasCamera(false);
+                setIsCameraActive(false);
+                return;
+            }
 
-            const newStream = await navigator.mediaDevices.getUserMedia(constraints);
+            let newStream;
+            try {
+                // Prioritaskan kamera belakang untuk nampan obat
+                newStream = await navigator.mediaDevices.getUserMedia({
+                    video: {
+                        facingMode: { ideal: facing },
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 },
+                    },
+                    audio: false,
+                });
+            } catch (specificErr) {
+                console.warn('Constraint kamera spesifik gagal, mencoba fallback default video: true', specificErr);
+                newStream = await navigator.mediaDevices.getUserMedia({
+                    video: true,
+                    audio: false,
+                });
+            }
+
             setStream(newStream);
             setIsCameraActive(true);
             setHasCamera(true);
 
+            // Langsung pasang ke video element jika sudah siap
             if (videoRef.current) {
                 videoRef.current.srcObject = newStream;
                 videoRef.current.play().catch(() => {});
             }
 
-            // Check torch capability
+            // Cek kemampuan senter / flashlight
             const videoTrack = newStream.getVideoTracks()[0];
             if (videoTrack && videoTrack.getCapabilities) {
                 const capabilities = videoTrack.getCapabilities();
                 setHasTorchCapability(Boolean(capabilities.torch));
             }
         } catch (err) {
-            console.warn('Camera access error:', err);
+            console.warn('Akses kamera ditolak atau belum diizinkan:', err);
             setHasCamera(false);
             setIsCameraActive(false);
         }
     };
+
+    // Sinkronisasi otomatis stream ke elemen video saat stream atau video element siap
+    useEffect(() => {
+        const video = videoRef.current;
+        if (!video || !stream) return;
+
+        video.srcObject = stream;
+        video.play().catch(() => {});
+
+        const handleMetadata = () => {
+            video.play().catch(() => {});
+        };
+
+        video.addEventListener('loadedmetadata', handleMetadata);
+        return () => {
+            video.removeEventListener('loadedmetadata', handleMetadata);
+        };
+    }, [stream, isFrozen]);
 
     useEffect(() => {
         startCamera(cameraFacing);
         setAutoCount(0);
         setManualCount(0);
 
+        // Otomatis resume video jika tab browser kembali aktif
+        const handleVisibilityChange = () => {
+            if (document.visibilityState === 'visible' && !isFrozen && videoRef.current && stream) {
+                videoRef.current.play().catch(() => {});
+            }
+        };
+        document.addEventListener('visibilitychange', handleVisibilityChange);
+
         return () => {
+            document.removeEventListener('visibilitychange', handleVisibilityChange);
             if (stream) {
                 stream.getTracks().forEach((track) => track.stop());
             }
@@ -401,18 +445,21 @@ export default function VerificationSession({ stats, recentSessions = [] }) {
                     onClick={handleTrayClick}
                     className="relative w-full rounded-2xl overflow-hidden shadow-2xl bg-surface-container-lowest border border-surface-container-highest/80 cursor-crosshair h-[40vh] min-h-[260px] max-h-[380px]"
                 >
-                    {/* Live Video Feed or Frozen Snapshot */}
-                    {isCameraActive && !isFrozen ? (
-                        <video
-                            ref={videoRef}
-                            autoPlay
-                            playsInline
-                            muted
-                            className="absolute inset-0 w-full h-full object-cover"
-                        />
-                    ) : (
+                    {/* Live Video Feed (Selalu terpasang di DOM agar videoRef tidak null saat kamera diizinkan) */}
+                    <video
+                        ref={videoRef}
+                        autoPlay
+                        playsInline
+                        muted
+                        className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-200 ${
+                            isCameraActive && !isFrozen ? 'opacity-100 z-0' : 'opacity-0 -z-10 pointer-events-none'
+                        }`}
+                    />
+
+                    {/* Snapshot / Demo Tray Fallback */}
+                    {(!isCameraActive || isFrozen) && (
                         <div
-                            className="absolute inset-0 bg-cover bg-center transition-opacity duration-300"
+                            className="absolute inset-0 bg-cover bg-center transition-opacity duration-300 z-0"
                             style={{
                                 backgroundImage: `url('${annotatedImageBase64 || rawImageBase64 || DEMO_TRAY_URL}')`,
                             }}
