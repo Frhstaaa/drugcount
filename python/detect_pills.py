@@ -367,22 +367,8 @@ def detect_pills(image, shape_filter="all", min_area=140, max_area=7500, sensiti
         # Mint cyan ring (BGR: 203, 216, 107 in hex #6bd8cb)
         cv2.circle(overlay, (cx, cy), max(pill["r"] + 3, 15), (203, 216, 107), 2)
         cv2.circle(overlay, (cx, cy), max(pill["r"] + 1, 13), (203, 216, 107), -1)
-        # Fluorescent lime center dot (BGR: 45, 222, 148 in hex #94de2d)
-        cv2.circle(annotated, (cx, cy), 3, (45, 222, 148), -1)
-
-        # Pill label badge (e.g. "01")
-        badge_text = f"{idx:02d}"
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        font_scale = 0.4
-        thickness = 1
-        (tw, th), _ = cv2.getTextSize(badge_text, font, font_scale, thickness)
-
-        badge_x = min(cx + pill["r"] + 4, proc_w - tw - 8)
-        badge_y = max(cy - pill["r"] - 2, th + 6)
-
-        cv2.rectangle(annotated, (badge_x - 3, badge_y - th - 3), (badge_x + tw + 3, badge_y + 3), (34, 26, 11), -1)
-        cv2.rectangle(annotated, (badge_x - 3, badge_y - th - 3), (badge_x + tw + 3, badge_y + 3), (203, 216, 107), 1)
-        cv2.putText(annotated, badge_text, (badge_x, badge_y), font, font_scale, (203, 216, 107), thickness, cv2.LINE_AA)
+        # Pill center dot
+        cv2.circle(annotated, (cx, cy), 4, (45, 222, 148), -1)
 
     alpha = 0.25
     cv2.addWeighted(overlay, alpha, annotated, 1 - alpha, 0, annotated)

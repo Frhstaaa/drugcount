@@ -509,11 +509,8 @@ export default function VerificationSession({ stats, recentSessions = [] }) {
                                         className="pill-node absolute flex items-center justify-center -translate-x-1/2 -translate-y-1/2"
                                         style={{ top: topPct, left: leftPct }}
                                     >
-                                        <span className="w-6 h-6 rounded-full bg-primary/25 flex items-center justify-center shadow-[0_0_12px_rgba(107,216,203,0.7)] border border-primary/70">
-                                            <span className="w-1 h-1 rounded-full bg-secondary mr-0.5"></span>
-                                            <span className="font-label-code text-[10px] text-primary font-bold">
-                                                {String(idx + 1).padStart(2, '0')}
-                                            </span>
+                                        <span className="w-5 h-5 rounded-full bg-primary/20 flex items-center justify-center shadow-[0_0_12px_rgba(107,216,203,0.8)] border-2 border-primary">
+                                            <span className="w-2 h-2 rounded-full bg-secondary shadow-[0_0_6px_rgba(148,222,45,0.9)] animate-pulse"></span>
                                         </span>
                                     </div>
                                 );
