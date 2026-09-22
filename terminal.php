@@ -55,9 +55,14 @@ $quickCommands = [
         'desc' => 'Menurunkan NumPy ke versi 1.x agar tidak lagi crash (Signal 11 / Segfault)'
     ],
     'git_pull' => [
-        'label' => '🔄 Git Pull Kode Terbaru',
-        'cmd' => 'git fetch origin main && git reset --hard origin/main && git pull origin main && php artisan optimize:clear',
-        'desc' => 'Menarik semua perbaikan terbaru dari GitHub'
+        'label' => '🔄 Git Pull & Update Kode',
+        'cmd' => 'git fetch origin main && git reset --hard origin/main && git pull origin main && php artisan migrate --force && php artisan optimize:clear',
+        'desc' => 'Menarik perbaikan terbaru dari GitHub dan otomatis menjalankan migrasi database'
+    ],
+    'run_migrate' => [
+        'label' => '🗄️ Jalankan Database Migration',
+        'cmd' => 'php artisan migrate --force',
+        'desc' => 'Menambahkan kolom tabel baru (seperti user_id multi-user) ke database SQLite'
     ],
     'start_daemon' => [
         'label' => '🐍 Nyalakan Python Server (:5175)',

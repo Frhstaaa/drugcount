@@ -4,29 +4,49 @@ namespace App\Http\Controllers;
 
 use App\Models\CountingSession;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Schema;
 use Inertia\Inertia;
 
 class PageController extends Controller
 {
     /**
+     * Pastikan schema tabel mutakhir.
+     */
+    protected function ensureMigration(): void
+    {
+        if (!Schema::hasColumn('counting_sessions', 'user_id')) {
+            try {
+                Artisan::call('migrate', ['--force' => true]);
+            } catch (\Throwable $e) {
+                // Abaikan jika database terkunci
+            }
+        }
+    }
+
+    /**
      * Camera verification session screen (Main Viewfinder).
      */
     public function index()
     {
+        $this->ensureMigration();
+
         $userId = auth()->id();
+        $hasUserCol = Schema::hasColumn('counting_sessions', 'user_id');
 
-        $todayCount = CountingSession::where('user_id', $userId)
-            ->whereDate('created_at', today())
-            ->count();
+        $queryToday = CountingSession::whereDate('created_at', today());
+        if ($hasUserCol && $userId) {
+            $queryToday->where('user_id', $userId);
+        }
 
-        $totalPillsToday = CountingSession::where('user_id', $userId)
-            ->whereDate('created_at', today())
-            ->sum('manual_count');
+        $todayCount = (clone $queryToday)->count();
+        $totalPillsToday = (clone $queryToday)->sum('manual_count');
 
-        $recentSessions = CountingSession::where('user_id', $userId)
-            ->latest()
-            ->take(5)
-            ->get();
+        $recentQuery = CountingSession::latest()->take(5);
+        if ($hasUserCol && $userId) {
+            $recentQuery->where('user_id', $userId);
+        }
+        $recentSessions = $recentQuery->get();
 
         return Inertia::render('VerificationSession', [
             'stats' => [
@@ -42,9 +62,15 @@ class PageController extends Controller
      */
     public function history(Request $request)
     {
-        $userId = auth()->id();
+        $this->ensureMigration();
 
-        $query = CountingSession::where('user_id', $userId)->latest();
+        $userId = auth()->id();
+        $hasUserCol = Schema::hasColumn('counting_sessions', 'user_id');
+
+        $query = CountingSession::latest();
+        if ($hasUserCol && $userId) {
+            $query->where('user_id', $userId);
+        }
 
         if ($request->filled('search')) {
             $search = $request->input('search');

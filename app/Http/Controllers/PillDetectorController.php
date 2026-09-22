@@ -4,7 +4,9 @@ namespace App\Http\Controllers;
 
 use App\Models\CountingSession;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Symfony\Component\Process\Process;
@@ -262,8 +264,7 @@ class PillDetectorController extends Controller
             ? $validated['pharmacist_name'] 
             : (auth()->user()?->name ?? 'Petugas Farmasi');
 
-        $session = CountingSession::create([
-            'user_id' => $userId,
+        $sessionData = [
             'prescription_no' => $validated['prescription_no'] ?? ('RX-' . strtoupper(Str::random(6))),
             'medicine_name' => $validated['medicine_name'],
             'pharmacist_name' => $pharmacistName,
@@ -277,7 +278,13 @@ class PillDetectorController extends Controller
             'annotated_image_path' => $annotatedPath,
             'detected_items' => $validated['detected_items'] ?? [],
             'notes' => $validated['notes'] ?? null,
-        ]);
+        ];
+
+        if (Schema::hasColumn('counting_sessions', 'user_id')) {
+            $sessionData['user_id'] = $userId;
+        }
+
+        $session = CountingSession::create($sessionData);
 
         return response()->json([
             'success' => true,
@@ -292,9 +299,11 @@ class PillDetectorController extends Controller
     public function list(Request $request)
     {
         $userId = auth()->id();
-        $query = CountingSession::query()
-            ->where('user_id', $userId)
-            ->orderBy('created_at', 'desc');
+        $query = CountingSession::query()->orderBy('created_at', 'desc');
+
+        if (Schema::hasColumn('counting_sessions', 'user_id') && $userId) {
+            $query->where('user_id', $userId);
+        }
 
         if ($request->filled('search')) {
             $search = $request->input('search');
@@ -320,7 +329,13 @@ class PillDetectorController extends Controller
     public function destroy($id)
     {
         $userId = auth()->id();
-        $session = CountingSession::where('user_id', $userId)->findOrFail($id);
+        $query = CountingSession::query();
+
+        if (Schema::hasColumn('counting_sessions', 'user_id') && $userId) {
+            $query->where('user_id', $userId);
+        }
+
+        $session = $query->findOrFail($id);
 
         if ($session->image_path && Storage::disk('public')->exists(str_replace('/storage/', '', $session->image_path))) {
             Storage::disk('public')->delete(str_replace('/storage/', '', $session->image_path));

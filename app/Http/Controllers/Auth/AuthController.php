@@ -6,18 +6,36 @@ use App\Http\Controllers\Controller;
 use App\Models\CountingSession;
 use App\Models\User;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
 
 class AuthController extends Controller
 {
     /**
+     * Pastikan tabel dan kolom user_id tersedia di database secara otomatis.
+     */
+    protected function ensureMigrationReady(): void
+    {
+        if (!Schema::hasTable('users') || !Schema::hasColumn('counting_sessions', 'user_id')) {
+            try {
+                Artisan::call('migrate', ['--force' => true]);
+            } catch (\Throwable $e) {
+                // Abaikan jika database terkunci sementara
+            }
+        }
+    }
+
+    /**
      * Tampilkan halaman login.
      */
     public function showLogin()
     {
+        $this->ensureMigrationReady();
+
         if (Auth::check()) {
             return redirect()->route('verification');
         }
@@ -30,6 +48,8 @@ class AuthController extends Controller
      */
     public function login(Request $request)
     {
+        $this->ensureMigrationReady();
+
         $credentials = $request->validate([
             'email' => ['required', 'string', 'email'],
             'password' => ['required', 'string'],
@@ -53,6 +73,8 @@ class AuthController extends Controller
      */
     public function showRegister()
     {
+        $this->ensureMigrationReady();
+
         if (Auth::check()) {
             return redirect()->route('verification');
         }
@@ -65,6 +87,8 @@ class AuthController extends Controller
      */
     public function register(Request $request)
     {
+        $this->ensureMigrationReady();
+
         $validated = $request->validate([
             'name' => ['required', 'string', 'max:255'],
             'email' => ['required', 'string', 'email', 'max:255', 'unique:users,email'],
@@ -79,7 +103,7 @@ class AuthController extends Controller
             'password.confirmed' => 'Konfirmasi kata sandi tidak cocok.',
         ]);
 
-        // Cek apakah ini user pertama yang mendaftar
+        // Cek apakah ini user pertama
         $isFirstUser = (User::count() === 0);
 
         $user = User::create([
@@ -88,12 +112,18 @@ class AuthController extends Controller
             'password' => Hash::make($validated['password']),
         ]);
 
-        // Sesuai kesepakatan: kaitkan data riwayat lama ke akun user pertama
+        // Sesuai kesepakatan: kaitkan data riwayat lama ke akun user pertama jika kolom user_id sudah ada
         if ($isFirstUser) {
-            CountingSession::whereNull('user_id')->update([
-                'user_id' => $user->id,
-                'pharmacist_name' => $user->name,
-            ]);
+            try {
+                if (Schema::hasColumn('counting_sessions', 'user_id')) {
+                    CountingSession::whereNull('user_id')->update([
+                        'user_id' => $user->id,
+                        'pharmacist_name' => $user->name,
+                    ]);
+                }
+            } catch (\Throwable $e) {
+                // Abaikan error pengaitan jika database schema belum sinkron
+            }
         }
 
         Auth::login($user);
