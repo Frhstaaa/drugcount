@@ -257,10 +257,16 @@ class PillDetectorController extends Controller
             $annotatedPath = $this->saveBase64Image($validated['annotated_image'], 'annotated_');
         }
 
+        $userId = auth()->id();
+        $pharmacistName = !empty($validated['pharmacist_name']) 
+            ? $validated['pharmacist_name'] 
+            : (auth()->user()?->name ?? 'Petugas Farmasi');
+
         $session = CountingSession::create([
+            'user_id' => $userId,
             'prescription_no' => $validated['prescription_no'] ?? ('RX-' . strtoupper(Str::random(6))),
             'medicine_name' => $validated['medicine_name'],
-            'pharmacist_name' => $validated['pharmacist_name'] ?? 'Petugas Farmasi',
+            'pharmacist_name' => $pharmacistName,
             'shape_filter' => $validated['shape_filter'] ?? 'all',
             'auto_count' => $validated['auto_count'],
             'manual_count' => $validated['manual_count'],
@@ -281,11 +287,14 @@ class PillDetectorController extends Controller
     }
 
     /**
-     * List past counting sessions.
+     * List past counting sessions (scoped to current user).
      */
     public function list(Request $request)
     {
-        $query = CountingSession::query()->orderBy('created_at', 'desc');
+        $userId = auth()->id();
+        $query = CountingSession::query()
+            ->where('user_id', $userId)
+            ->orderBy('created_at', 'desc');
 
         if ($request->filled('search')) {
             $search = $request->input('search');
@@ -306,11 +315,12 @@ class PillDetectorController extends Controller
     }
 
     /**
-     * Delete a counting session.
+     * Delete a counting session (user must own this session).
      */
     public function destroy($id)
     {
-        $session = CountingSession::findOrFail($id);
+        $userId = auth()->id();
+        $session = CountingSession::where('user_id', $userId)->findOrFail($id);
 
         if ($session->image_path && Storage::disk('public')->exists(str_replace('/storage/', '', $session->image_path))) {
             Storage::disk('public')->delete(str_replace('/storage/', '', $session->image_path));

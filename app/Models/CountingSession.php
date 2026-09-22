@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 class CountingSession extends Model
 {
     protected $fillable = [
+        'user_id',
         'prescription_no',
         'medicine_name',
         'pharmacist_name',
@@ -23,6 +24,7 @@ class CountingSession extends Model
     ];
 
     protected $casts = [
+        'user_id' => 'integer',
         'detected_items' => 'array',
         'auto_count' => 'integer',
         'manual_count' => 'integer',
@@ -31,4 +33,12 @@ class CountingSession extends Model
         'created_at' => 'datetime',
         'updated_at' => 'datetime',
     ];
+
+    /**
+     * Petugas farmasi pemilik sesi penghitungan.
+     */
+    public function user()
+    {
+        return $this->belongsTo(User::class);
+    }
 }

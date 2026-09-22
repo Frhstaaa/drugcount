@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { usePage } from '@inertiajs/react';
 import axios from 'axios';
 import confetti from 'canvas-confetti';
 import { BookmarkPlus, X, AlertCircle, CheckCircle } from 'lucide-react';
@@ -11,12 +12,15 @@ export default function SaveSessionModal({
 }) {
     if (!isOpen || !sessionData) return null;
 
+    const { props } = usePage();
+    const user = props?.auth?.user;
+
     const [prescriptionNo, setPrescriptionNo] = useState(
         'RX-' + Math.floor(100000 + Math.random() * 900000)
     );
     const [medicineName, setMedicineName] = useState('');
     const [pharmacistName, setPharmacistName] = useState(
-        localStorage.getItem('pillcount_operator') || 'Apt. Sarah Pratama, S.Farm'
+        user?.name || localStorage.getItem('pillcount_operator') || 'Petugas Farmasi'
     );
     const [notes, setNotes] = useState('');
     const [isSubmitting, setIsSubmitting] = useState(false);

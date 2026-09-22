@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Head, Link, router } from '@inertiajs/react';
+import { Head, Link, router, usePage } from '@inertiajs/react';
 import axios from 'axios';
 import { 
     CheckCircle, 
@@ -9,12 +9,15 @@ import {
     Scan, 
     Pill, 
     User, 
-    Clock 
+    Clock,
+    ShieldCheck
 } from 'lucide-react';
 import Navbar from '@/Components/Navbar';
 import DetailModal from '@/Components/DetailModal';
 
 export default function History({ sessions, filters }) {
+    const { props } = usePage();
+    const user = props?.auth?.user;
     const [search, setSearch] = useState(filters?.search || '');
     const [selectedShape, setSelectedShape] = useState(filters?.shape || 'all');
     const [selectedSession, setSelectedSession] = useState(null);
@@ -86,11 +89,12 @@ export default function History({ sessions, filters }) {
                 <div>
                     <div className="flex items-center justify-between">
                         <div>
-                            <h1 className="font-headline-lg text-lg font-bold text-on-surface tracking-tight">
+                            <h1 className="font-headline-lg text-lg font-bold text-on-surface tracking-tight flex items-center gap-1.5">
                                 Riwayat Verifikasi
                             </h1>
-                            <p className="text-[11px] text-on-surface-variant">
-                                Arsip penghitungan obat via kamera
+                            <p className="text-[11px] text-on-surface-variant flex items-center gap-1">
+                                <ShieldCheck className="w-3.5 h-3.5 text-primary" />
+                                {user ? `Riwayat Petugas: ${user.name}` : 'Arsip verifikasi resep obat'}
                             </p>
                         </div>
                         <Link

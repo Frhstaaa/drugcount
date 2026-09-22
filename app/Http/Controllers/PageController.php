@@ -13,9 +13,20 @@ class PageController extends Controller
      */
     public function index()
     {
-        $todayCount = CountingSession::whereDate('created_at', today())->count();
-        $totalPillsToday = CountingSession::whereDate('created_at', today())->sum('manual_count');
-        $recentSessions = CountingSession::latest()->take(5)->get();
+        $userId = auth()->id();
+
+        $todayCount = CountingSession::where('user_id', $userId)
+            ->whereDate('created_at', today())
+            ->count();
+
+        $totalPillsToday = CountingSession::where('user_id', $userId)
+            ->whereDate('created_at', today())
+            ->sum('manual_count');
+
+        $recentSessions = CountingSession::where('user_id', $userId)
+            ->latest()
+            ->take(5)
+            ->get();
 
         return Inertia::render('VerificationSession', [
             'stats' => [
@@ -27,11 +38,13 @@ class PageController extends Controller
     }
 
     /**
-     * History list and verification archives.
+     * History list and verification archives (Scoped to current authenticated user).
      */
     public function history(Request $request)
     {
-        $query = CountingSession::latest();
+        $userId = auth()->id();
+
+        $query = CountingSession::where('user_id', $userId)->latest();
 
         if ($request->filled('search')) {
             $search = $request->input('search');

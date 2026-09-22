@@ -46,4 +46,12 @@ class User extends Authenticatable
             'password' => 'hashed',
         ];
     }
+
+    /**
+     * Riwayat sesi penghitungan obat milik user ini.
+     */
+    public function countingSessions()
+    {
+        return $this->hasMany(CountingSession::class);
+    }
 }
