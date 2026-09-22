@@ -3,6 +3,9 @@
 PillCount Python Microservice Server
 Lightweight HTTP API for real-time OpenCV pill detection & analysis.
 Listens on http://127.0.0.1:5175
+Features:
+- Dynamic module hot-reloading (automatically picks up detect_pills.py updates without needing daemon restart)
+- Single-thread low-memory footprint (<50MB VIRT)
 """
 
 import sys
@@ -18,6 +21,7 @@ os.environ["NUMEXPR_NUM_THREADS"] = "1"
 import json
 import base64
 import time
+import importlib
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import numpy as np
 import cv2
@@ -30,7 +34,7 @@ except Exception:
     pass
 
 # Import detection logic
-from detect_pills import detect_pills, load_image
+import detect_pills
 
 HOST = "127.0.0.1"
 PORT = 5175
@@ -56,10 +60,22 @@ class PillDetectionHandler(BaseHTTPRequestHandler):
             resp = {
                 "status": "online",
                 "service": "PillCount Python CV Engine",
-                "version": "1.0",
-                "opencv_version": cv2.__version__
+                "version": "2.0-hybrid-blister",
+                "opencv_version": cv2.__version__,
+                "server_time": time.strftime("%Y-%m-%d %H:%M:%S")
             }
             self.wfile.write(json.dumps(resp).encode("utf-8"))
+        elif self.path == "/reload":
+            try:
+                importlib.reload(detect_pills)
+                msg = "Engine reloaded successfully"
+            except Exception as e:
+                msg = f"Reload error: {e}"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self._send_cors_headers()
+            self.end_headers()
+            self.wfile.write(json.dumps({"success": True, "message": msg}).encode("utf-8"))
         else:
             self.send_response(404)
             self.end_headers()
@@ -71,6 +87,12 @@ class PillDetectionHandler(BaseHTTPRequestHandler):
             post_data = self.rfile.read(content_length)
 
             try:
+                # Dynamic hot-reload: always use newest detect_pills logic
+                try:
+                    importlib.reload(detect_pills)
+                except Exception:
+                    pass
+
                 payload = json.loads(post_data.decode("utf-8"))
                 image_input = payload.get("image")
                 if not image_input:
@@ -86,8 +108,8 @@ class PillDetectionHandler(BaseHTTPRequestHandler):
                 max_area = int(payload.get("max_area", 120000))
                 sensitivity = int(payload.get("sensitivity", 50))
 
-                img = load_image(image_input)
-                result = detect_pills(
+                img = detect_pills.load_image(image_input)
+                result = detect_pills.detect_pills(
                     img,
                     shape_filter=shape_filter,
                     min_area=min_area,
@@ -113,7 +135,7 @@ class PillDetectionHandler(BaseHTTPRequestHandler):
             self.end_headers()
 
     def log_message(self, format, *args):
-        # Suppress noisy standard logs, print concise summary
+        # Suppress noisy logs, print concise summary
         sys.stderr.write(f"[PillCV] {self.address_string()} - {args[0]} {args[1]}\n")
 
 

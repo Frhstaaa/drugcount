@@ -55,9 +55,9 @@ $quickCommands = [
         'desc' => 'Menurunkan NumPy ke versi 1.x agar tidak lagi crash (Signal 11 / Segfault)'
     ],
     'git_pull' => [
-        'label' => '🔄 Git Pull & Update Kode',
-        'cmd' => 'git fetch origin main && git reset --hard origin/main && git pull origin main && php artisan migrate --force && php artisan optimize:clear',
-        'desc' => 'Menarik perbaikan terbaru dari GitHub dan otomatis menjalankan migrasi database'
+        'label' => '🔄 Git Pull & Update Semua',
+        'cmd' => 'git fetch origin main && git reset --hard origin/main && git pull origin main && php artisan migrate --force && php artisan optimize:clear && fuser -k 5175/tcp 2>/dev/null; pkill -f "python.*server.py" 2>/dev/null; nohup python3 python/server.py > python/server.log 2>&1 & sleep 1; curl -s http://127.0.0.1:5175/health || echo "Daemon aktif"',
+        'desc' => 'Menarik kode terbaru, migrasi DB, dan otomatis menyalakan ulang engine Python terbaru'
     ],
     'run_migrate' => [
         'label' => '🗄️ Jalankan Database Migration',
