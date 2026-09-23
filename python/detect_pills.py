@@ -43,6 +43,13 @@ try:
 except Exception:
     pass
 
+# YOLOv8 Instance Segmentation & Peak Segmenter Engine
+try:
+    from yolo_segmenter import YOLOPillSegmenter
+    _yolo_segmenter = YOLOPillSegmenter()
+except Exception as e:
+    _yolo_segmenter = None
+
 
 def analyze_image_quality(gray):
     """Analyze lighting conditions and sharpness/focus."""
@@ -91,10 +98,11 @@ def classify_pill_shape(contour, approx, aspect_ratio, circularity, solidity, ar
     return None, 0.0
 
 
-def detect_pills(image, shape_filter="all", min_area=140, max_area=7500, sensitivity=50):
+def detect_pills(image, shape_filter="all", min_area=140, max_area=7500, sensitivity=50, engine="auto"):
     """
-    Detect genuine pharmaceutical pills with hybrid contour-watershed and Hough circle detection.
-    Accurately detects both loose pills on trays AND pills in blister packs / strips.
+    Detect genuine pharmaceutical pills with hybrid YOLO instance segmentation,
+    dual-threshold watershed, and Hough circle detection.
+    Accurately detects both loose touching pills on trays AND pills in blister packs / strips.
     """
     orig_h, orig_w = image.shape[:2]
 
@@ -112,6 +120,51 @@ def detect_pills(image, shape_filter="all", min_area=140, max_area=7500, sensiti
 
     gray = cv2.cvtColor(proc_img, cv2.COLOR_BGR2GRAY)
     quality = analyze_image_quality(gray)
+
+    # ==========================================
+    # STRATEGY 0: Dedicated YOLOv8 Instance Segmentation Mode
+    # ==========================================
+    if engine == "yolo" and _yolo_segmenter is not None:
+        yolo_pills = _yolo_segmenter.segment(image, min_area=min_area, max_area=max_area)
+        if shape_filter != "all":
+            yolo_pills = [p for p in yolo_pills if p.get("shape") == shape_filter]
+
+        annotated = image.copy()
+        overlay = image.copy()
+
+        for pill in yolo_pills:
+            cx = int(round(pill["centroid"][0]))
+            cy = int(round(pill["centroid"][1]))
+            rad = max(int(max(pill["width"], pill["height"]) / 2) + 2, 14)
+
+            if pill.get("polygon") and len(pill["polygon"]) >= 3:
+                poly_pts = np.array([
+                    [int(round(pt[0] * orig_w)), int(round(pt[1] * orig_h))]
+                    for pt in pill["polygon"]
+                ], dtype=np.int32).reshape((-1, 1, 2))
+                cv2.drawContours(overlay, [poly_pts], -1, (203, 216, 107), -1)
+                cv2.drawContours(annotated, [poly_pts], -1, (203, 216, 107), 2)
+
+            cv2.circle(overlay, (cx, cy), rad + 3, (203, 216, 107), 2)
+            cv2.circle(overlay, (cx, cy), rad + 1, (203, 216, 107), -1)
+            cv2.circle(annotated, (cx, cy), 4, (45, 222, 148), -1)
+
+        alpha = 0.25
+        cv2.addWeighted(overlay, alpha, annotated, 1 - alpha, 0, annotated)
+
+        _, buffer = cv2.imencode('.jpg', annotated, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+        annotated_b64 = "data:image/jpeg;base64," + base64.b64encode(buffer).decode('utf-8')
+
+        return {
+            "success": True,
+            "count": len(yolo_pills),
+            "shape_filter": shape_filter,
+            "engine_used": f"yolo_instance_segmentation ({_yolo_segmenter.backend})",
+            "pills": yolo_pills,
+            "quality": quality,
+            "annotated_image": annotated_b64 if yolo_pills else None,
+            "image_size": {"width": orig_w, "height": orig_h}
+        }
 
     # Denoise while keeping crisp edges
     denoised = cv2.bilateralFilter(gray, d=7, sigmaColor=50, sigmaSpace=50)
@@ -335,12 +388,53 @@ def detect_pills(image, shape_filter="all", min_area=140, max_area=7500, sensiti
                         })
 
     # ==========================================
+    # STRATEGY 2.5: YOLO Instance Segmentation Integration
+    # (Adds pixel-level masks and resolves touching/clustered loose pills)
+    # ==========================================
+    if engine == "auto" and _yolo_segmenter is not None and _yolo_segmenter.is_available():
+        try:
+            yolo_pills = _yolo_segmenter.segment(image, min_area=min_area, max_area=max_area)
+            for p in yolo_pills:
+                ycx = int(p["centroid"][0] * scale)
+                ycy = int(p["centroid"][1] * scale)
+                yr = max(int(max(p["width"], p["height"]) * scale / 2), 12)
+
+                matched = False
+                for cand in candidate_pills:
+                    dist = np.hypot(cand["cx"] - ycx, cand["cy"] - ycy)
+                    if dist < max(cand["r"], yr) * 0.90:
+                        cand["polygon"] = p.get("polygon")
+                        cand["source"] = "yolo_enhanced"
+                        matched = True
+                        break
+
+                if not matched:
+                    candidate_pills.append({
+                        "x": int(p["x"] * scale),
+                        "y": int(p["y"] * scale),
+                        "w": int(p["width"] * scale),
+                        "h": int(p["height"] * scale),
+                        "cx": ycx,
+                        "cy": ycy,
+                        "r": yr,
+                        "area": p["area"] * (scale * scale),
+                        "circularity": p["circularity"],
+                        "solidity": p["solidity"],
+                        "aspect_ratio": p["aspect_ratio"],
+                        "shape": p["shape"],
+                        "confidence": p["confidence"],
+                        "contrast": 35.0,
+                        "polygon": p.get("polygon"),
+                        "source": "yolo_segmentation"
+                    })
+        except Exception:
+            pass
+
+    # ==========================================
     # STRATEGY 3: Blister Priority, Outlier Size Filtering & Spatial De-duplication
     # ==========================================
-    # If blister pack with high confidence was detected (>=4 uniform circular tablets),
-    # prioritize blister tablets and suppress stray background noise outside the blister pack
-    blister_pills = [p for p in candidate_pills if p.get("source") == "hough"]
-    if len(blister_pills) >= 4:
+    blister_pills = [p for p in candidate_pills if p.get("source") in ["hough", "yolo_enhanced"]]
+    if len([p for p in blister_pills if p.get("source") == "hough" or p.get("source") == "yolo_enhanced"]) >= 4:
         filtered_candidates = blister_pills
     elif len(candidate_pills) >= 4:
         areas = [p["area"] for p in candidate_pills]
@@ -395,10 +489,19 @@ def detect_pills(image, shape_filter="all", min_area=140, max_area=7500, sensiti
             "confidence": round(pill["confidence"], 2),
             "area": int(pill["area"] / (scale * scale)),
             "circularity": round(pill["circularity"], 2),
-            "aspect_ratio": round(pill["aspect_ratio"], 2)
+            "aspect_ratio": round(pill["aspect_ratio"], 2),
+            "polygon": pill.get("polygon")
         })
 
         cx, cy = pill["cx"], pill["cy"]
+        if pill.get("polygon") and len(pill["polygon"]) >= 3:
+            poly_pts = np.array([
+                [int(round(pt[0] * proc_w)), int(round(pt[1] * proc_h))]
+                for pt in pill["polygon"]
+            ], dtype=np.int32).reshape((-1, 1, 2))
+            cv2.drawContours(overlay, [poly_pts], -1, (203, 216, 107), -1)
+            cv2.drawContours(annotated, [poly_pts], -1, (203, 216, 107), 2)
+
         # Mint cyan ring (BGR: 203, 216, 107 in hex #6bd8cb)
         cv2.circle(overlay, (cx, cy), max(pill["r"] + 3, 15), (203, 216, 107), 2)
         cv2.circle(overlay, (cx, cy), max(pill["r"] + 1, 13), (203, 216, 107), -1)
@@ -411,10 +514,14 @@ def detect_pills(image, shape_filter="all", min_area=140, max_area=7500, sensiti
     _, buffer = cv2.imencode('.jpg', annotated, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
     annotated_b64 = "data:image/jpeg;base64," + base64.b64encode(buffer).decode('utf-8')
 
+    has_yolo_pills = any(p.get("source") == "yolo_segmentation" for p in filtered_candidates)
+    active_engine_name = "hybrid_yolo_watershed" if has_yolo_pills else "scientific_watershed"
+
     return {
         "success": True,
         "count": len(detected_pills),
         "shape_filter": shape_filter,
+        "engine_used": active_engine_name,
         "pills": detected_pills,
         "quality": quality,
         "annotated_image": annotated_b64 if detected_pills else None,
@@ -461,6 +568,7 @@ def main():
     parser.add_argument("--min-area", type=int, default=140, help="Minimum pill area in pixels")
     parser.add_argument("--max-area", type=int, default=7500, help="Maximum pill area in pixels")
     parser.add_argument("--sensitivity", type=int, default=50, help="Detection sensitivity (1-100)")
+    parser.add_argument("--engine", type=str, default="auto", choices=["auto", "yolo", "classic"], help="CV engine mode")
     parser.add_argument("--output", type=str, help="Optional path to save annotated image")
 
     args = parser.parse_args()
@@ -484,7 +592,8 @@ def main():
         shape_filter=args.shape,
         min_area=args.min_area,
         max_area=args.max_area,
-        sensitivity=args.sensitivity
+        sensitivity=args.sensitivity,
+        engine=args.engine
     )
 
     if args.output and result.get("annotated_image"):

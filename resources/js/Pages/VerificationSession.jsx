@@ -45,6 +45,8 @@ export default function VerificationSession({ stats, recentSessions = [] }) {
 
     // Pill counting state
     const [currentShape, setCurrentShape] = useState('all');
+    const [detectionEngine, setDetectionEngine] = useState('auto'); // 'auto' | 'yolo' | 'classic'
+    const [engineUsed, setEngineUsed] = useState('auto');
     const [isFrozen, setIsFrozen] = useState(false);
     const [isDetecting, setIsDetecting] = useState(false);
     const [rawImageBase64, setRawImageBase64] = useState(null);
@@ -278,6 +280,7 @@ export default function VerificationSession({ stats, recentSessions = [] }) {
             const res = await axios.post('/api/detect', {
                 image: imageBase64,
                 shape: shape,
+                engine: detectionEngine,
                 sensitivity: 50,
             });
 
@@ -287,6 +290,9 @@ export default function VerificationSession({ stats, recentSessions = [] }) {
                 setManualCount(count);
                 setDetectedPills(res.data.pills || []);
                 setConfidence(count > 0 ? 99 : 0);
+                if (res.data.engine_used) {
+                    setEngineUsed(res.data.engine_used);
+                }
                 if (res.data.quality) {
                     setQualityInfo(res.data.quality);
                 }
@@ -337,6 +343,7 @@ export default function VerificationSession({ stats, recentSessions = [] }) {
                 const res = await axios.post('/api/detect', {
                     image: frame,
                     shape: currentShape,
+                    engine: detectionEngine,
                     sensitivity: 50,
                 });
 
@@ -346,6 +353,9 @@ export default function VerificationSession({ stats, recentSessions = [] }) {
                     setManualCount(count);
                     setDetectedPills(res.data.pills || []);
                     setConfidence(count > 0 ? 99 : 0);
+                    if (res.data.engine_used) {
+                        setEngineUsed(res.data.engine_used);
+                    }
                     if (res.data.quality) {
                         setQualityInfo(res.data.quality);
                     }
@@ -562,22 +572,50 @@ export default function VerificationSession({ stats, recentSessions = [] }) {
                         </span>
                     </button>
 
-                    {/* Shape Selectors */}
-                    <div className="flex items-center p-0.5 rounded-full bg-surface-container-low border border-surface-container-highest/40">
-                        {['all', 'tablet', 'capsule'].map((shape) => (
-                            <button
-                                key={shape}
-                                type="button"
-                                onClick={() => handleShapeChange(shape)}
-                                className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium transition-all ${
-                                    currentShape === shape
-                                        ? 'bg-primary text-on-primary font-semibold shadow-sm'
-                                        : 'text-on-surface-variant hover:text-on-surface'
-                                }`}
-                            >
-                                {shape === 'all' ? 'Semua' : shape === 'tablet' ? 'Tablet' : 'Kapsul'}
-                            </button>
-                        ))}
+                    {/* AI Engine & Shape Selectors */}
+                    <div className="flex items-center gap-1.5 overflow-x-auto py-0.5 max-w-full">
+                        {/* Engine Mode Toggle */}
+                        <div className="flex items-center p-0.5 rounded-full bg-surface-container-low border border-surface-container-highest/40 flex-shrink-0">
+                            {[
+                                { id: 'auto', label: '⚡ Auto' },
+                                { id: 'yolo', label: '🧠 YOLO Segmen' },
+                                { id: 'classic', label: '🔬 Blister/Strip' },
+                            ].map((eng) => (
+                                <button
+                                    key={eng.id}
+                                    type="button"
+                                    onClick={() => {
+                                        setDetectionEngine(eng.id);
+                                        showToast(`Mode: ${eng.label}`);
+                                    }}
+                                    className={`px-2 py-0.5 rounded-full text-[10.5px] font-medium transition-all ${
+                                        detectionEngine === eng.id
+                                            ? 'bg-secondary text-on-secondary font-bold shadow-sm'
+                                            : 'text-on-surface-variant hover:text-on-surface'
+                                    }`}
+                                >
+                                    {eng.label}
+                                </button>
+                            ))}
+                        </div>
+
+                        {/* Shape Selectors */}
+                        <div className="flex items-center p-0.5 rounded-full bg-surface-container-low border border-surface-container-highest/40 flex-shrink-0">
+                            {['all', 'tablet', 'capsule'].map((shape) => (
+                                <button
+                                    key={shape}
+                                    type="button"
+                                    onClick={() => handleShapeChange(shape)}
+                                    className={`px-2 py-0.5 rounded-full text-[10.5px] font-medium transition-all ${
+                                        currentShape === shape
+                                            ? 'bg-primary text-on-primary font-bold shadow-sm'
+                                            : 'text-on-surface-variant hover:text-on-surface'
+                                    }`}
+                                >
+                                    {shape === 'all' ? 'Semua' : shape === 'tablet' ? 'Tablet' : 'Kapsul'}
+                                </button>
+                            ))}
+                        </div>
                     </div>
                 </div>
 
@@ -641,8 +679,28 @@ export default function VerificationSession({ stats, recentSessions = [] }) {
                         <div className="absolute inset-x-0 h-0.5 bg-gradient-to-r from-transparent via-primary to-transparent pointer-events-none animate-[bounce_3s_infinite]" />
                     )}
 
+                    {/* Pixel-level Polygon Mask Layer for Touching / Clustered Pills */}
+                    <svg className="absolute inset-0 w-full h-full pointer-events-none z-10">
+                        {(isFrozen || (isAutoDetect && isCameraActive)) &&
+                            detectedPills.map((pill, idx) => {
+                                if (!pill.polygon || pill.polygon.length < 3) return null;
+                                const pts = pill.polygon.map(pt => `${pt[0] * 100}%,${pt[1] * 100}%`).join(' ');
+                                return (
+                                    <polygon
+                                        key={`poly-${pill.id || idx}`}
+                                        points={pts}
+                                        fill="rgba(107, 216, 203, 0.16)"
+                                        stroke={isStable ? "#acf847" : "#6bd8cb"}
+                                        strokeWidth="1.5"
+                                        strokeDasharray={isStable ? "none" : "3,2"}
+                                        className="transition-all duration-150"
+                                    />
+                                );
+                            })}
+                    </svg>
+
                     {/* Pill Detection Markers Overlay (Active in frozen state or live auto-detect) */}
-                    <div className="absolute inset-0 pointer-events-none">
+                    <div className="absolute inset-0 pointer-events-none z-20">
                         {(isFrozen || (isAutoDetect && isCameraActive)) &&
                             detectedPills.map((pill, idx) => {
                                 const topPct = pill.pct_y !== undefined
@@ -694,6 +752,10 @@ export default function VerificationSession({ stats, recentSessions = [] }) {
                                 <span className="font-label-code text-[9px] text-secondary font-semibold">
                                     {isFrozen ? `${confidence}% AKURAT` : 'KAMERA AKTIF'}
                                 </span>
+                            </div>
+                            <div className="px-1.5 py-0.5 rounded bg-surface-container-lowest/80 text-on-surface-variant font-label-code text-[9px] flex items-center gap-1 border border-primary/20">
+                                <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse"></span>
+                                <span>{engineUsed.includes('yolo') ? '🧠 YOLO SEG' : '🔬 SCIENTIFIC CV'}</span>
                             </div>
                             <div className="px-1.5 py-0.5 rounded bg-surface-container-lowest/80 text-on-surface-variant font-label-code text-[9px]">
                                 {isDetecting ? 'AI MEMPROSES...' : '60 FPS LIVE'}

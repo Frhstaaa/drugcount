@@ -56,8 +56,13 @@ $quickCommands = [
     ],
     'git_pull' => [
         'label' => '🔄 Git Pull & Update Semua',
-        'cmd' => 'git fetch origin main && git reset --hard origin/main && git pull origin main && php artisan migrate --force && php artisan optimize:clear && python3 -m pip install scipy scikit-image --no-warn-script-location && fuser -k 5175/tcp 2>/dev/null; pkill -f "python.*server.py" 2>/dev/null; setsid python3 python/server.py > python/server.log 2>&1 < /dev/null & sleep 1; curl -s http://127.0.0.1:5175/health || echo "Daemon aktif"',
+        'cmd' => 'git fetch origin main && git reset --hard origin/main && git pull origin main && php artisan migrate --force && php artisan optimize:clear && python3 -m pip install scipy scikit-image onnxruntime --no-warn-script-location && fuser -k 5175/tcp 2>/dev/null; pkill -f "python.*server.py" 2>/dev/null; setsid python3 python/server.py > python/server.log 2>&1 < /dev/null & sleep 1; curl -s http://127.0.0.1:5175/health || echo "Daemon aktif"',
         'desc' => 'Menarik kode terbaru, menginstal library saintifik, migrasi DB, dan otomatis menyalakan engine Python terbaru'
+    ],
+    'install_yolo' => [
+        'label' => '🧠 1-Click Setup YOLO & ONNX Runtime',
+        'cmd' => 'python3 -m pip install onnxruntime --no-warn-script-location && python3 test_yolo_segmenter.py',
+        'desc' => 'Memasang engine YOLOv8 Instance Segmentation via ONNX Runtime untuk memisahkan pil bertumpuk/menempel'
     ],
     'install_scientific' => [
         'label' => '🔬 Install Library Saintifik (SciPy & Scikit-Image)',

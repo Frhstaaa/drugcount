@@ -23,3 +23,6 @@ Homestead.yaml
 Thumbs.db
 python/test_*.jpg
 *.zip
+scratch/
+__pycache__/
+*.pyc

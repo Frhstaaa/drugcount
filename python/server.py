@@ -57,10 +57,13 @@ class PillDetectionHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self._send_cors_headers()
             self.end_headers()
+            yolo_seg = getattr(detect_pills, "_yolo_segmenter", None)
             resp = {
                 "status": "online",
                 "service": "PillCount Python CV Engine",
-                "version": "2.0-hybrid-blister",
+                "version": "3.0-yolo-instance-seg",
+                "yolo_available": yolo_seg is not None and yolo_seg.is_available(),
+                "active_backend": yolo_seg.backend if yolo_seg else "none",
                 "opencv_version": cv2.__version__,
                 "server_time": time.strftime("%Y-%m-%d %H:%M:%S")
             }
@@ -107,6 +110,7 @@ class PillDetectionHandler(BaseHTTPRequestHandler):
                 min_area = int(payload.get("min_area", 120))
                 max_area = int(payload.get("max_area", 120000))
                 sensitivity = int(payload.get("sensitivity", 50))
+                engine = payload.get("engine", "auto")
 
                 img = detect_pills.load_image(image_input)
                 result = detect_pills.detect_pills(
@@ -114,7 +118,8 @@ class PillDetectionHandler(BaseHTTPRequestHandler):
                     shape_filter=shape_filter,
                     min_area=min_area,
                     max_area=max_area,
-                    sensitivity=sensitivity
+                    sensitivity=sensitivity,
+                    engine=engine
                 )
                 result["latency_ms"] = round((time.time() - start_time) * 1000, 1)
 

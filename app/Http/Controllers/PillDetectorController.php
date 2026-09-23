@@ -24,12 +24,14 @@ class PillDetectorController extends Controller
             'min_area' => 'nullable|integer|min:20|max:10000',
             'max_area' => 'nullable|integer|min:500|max:200000',
             'sensitivity' => 'nullable|integer|min:1|max:100',
+            'engine' => 'nullable|string|in:auto,yolo,classic',
         ]);
 
         $shape = $validated['shape'] ?? 'all';
         $minArea = $validated['min_area'] ?? 120;
         $maxArea = $validated['max_area'] ?? 120000;
         $sensitivity = $validated['sensitivity'] ?? 50;
+        $engine = $validated['engine'] ?? 'auto';
         $imageB64 = $validated['image'];
 
         // Option 1: Try local Python microservice (port 5175) for ultra-low latency
@@ -40,6 +42,7 @@ class PillDetectorController extends Controller
                 'min_area' => $minArea,
                 'max_area' => $maxArea,
                 'sensitivity' => $sensitivity,
+                'engine' => $engine,
             ]);
 
             if ($response->successful()) {
@@ -85,6 +88,7 @@ class PillDetectorController extends Controller
                     '--min-area', (string)$minArea,
                     '--max-area', (string)$maxArea,
                     '--sensitivity', (string)$sensitivity,
+                    '--engine', $engine,
                 ],
                 base_path(),
                 [
