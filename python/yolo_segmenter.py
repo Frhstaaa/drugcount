@@ -126,7 +126,13 @@ class YOLOPillSegmenter:
 
     def _segment_onnx(self, image, min_area, max_area, conf_threshold, iou_threshold):
         orig_h, orig_w = image.shape[:2]
-        input_img, ratio, (pad_w, pad_h) = self._letterbox(image, (640, 640))
+        
+        # Dynamically determine model input size
+        inp_shape = self.session.get_inputs()[0].shape
+        img_h = inp_shape[2] if len(inp_shape) > 2 and isinstance(inp_shape[2], int) else 384
+        img_w = inp_shape[3] if len(inp_shape) > 3 and isinstance(inp_shape[3], int) else 384
+
+        input_img, ratio, (pad_w, pad_h) = self._letterbox(image, (img_w, img_h))
         input_tensor = input_img.transpose((2, 0, 1))[::-1]  # BGR to RGB, HWC to CHW
         input_tensor = np.ascontiguousarray(input_tensor, dtype=np.float32) / 255.0
         input_tensor = input_tensor[None, ...]  # Add batch dim
@@ -137,15 +143,19 @@ class YOLOPillSegmenter:
         except Exception:
             return self._segment_scientific_peak_watershed(image, min_area, max_area)
 
-        # YOLOv8-seg outputs: output0 = [1, num_channels, 8400], output1 = [1, 32, 160, 160]
-        preds = np.squeeze(outputs[0]).T  # shape [8400, num_channels]
-        protos = np.squeeze(outputs[1])   # shape [32, 160, 160]
+        # YOLOv8-seg outputs: output0 = [1, num_channels, num_anchors], output1 = [1, 32, proto_h, proto_w]
+        preds = np.squeeze(outputs[0]).T  # shape [num_anchors, num_channels]
+        protos = np.squeeze(outputs[1])   # shape [32, proto_h, proto_w]
 
         num_channels = preds.shape[1]
         num_classes = num_channels - 4 - 32
         boxes_data = preds[:, :4]
         scores_data = preds[:, 4:4 + num_classes]
         mask_coeffs_data = preds[:, 4 + num_classes:]
+
+        proto_h, proto_w = protos.shape[1], protos.shape[2]
+        scale_proto_x = proto_w / float(img_w)
+        scale_proto_y = proto_h / float(img_h)
 
         # Class-agnostic object confidence
         max_scores = np.max(scores_data, axis=1)
@@ -176,24 +186,23 @@ class YOLOPillSegmenter:
             coeff = kept_coeffs[i]
             score = kept_scores[i]
 
-            # Reconstruct mask at 160x160
-            raw_mask = np.matmul(coeff, protos.reshape(32, -1)).reshape(160, 160)
-            mask_160 = 1.0 / (1.0 + np.exp(-raw_mask))  # sigmoid
+            # Reconstruct mask at proto_h x proto_w
+            raw_mask = np.matmul(coeff, protos.reshape(32, -1)).reshape(proto_h, proto_w)
+            mask_proto = 1.0 / (1.0 + np.exp(-raw_mask))  # sigmoid
 
-            # Crop to bounding box in 160x160 coords
-            scale_proto = 160.0 / 640.0
-            bx1 = max(0, int(round(box[0] * scale_proto)))
-            by1 = max(0, int(round(box[1] * scale_proto)))
-            bx2 = min(160, int(round((box[0] + box[2]) * scale_proto)))
-            by2 = min(160, int(round((box[1] + box[3]) * scale_proto)))
+            # Crop to bounding box in proto coords
+            bx1 = max(0, int(round(box[0] * scale_proto_x)))
+            by1 = max(0, int(round(box[1] * scale_proto_y)))
+            bx2 = min(proto_w, int(round((box[0] + box[2]) * scale_proto_x)))
+            by2 = min(proto_h, int(round((box[1] + box[3]) * scale_proto_y)))
 
-            cropped_mask = np.zeros_like(mask_160)
-            cropped_mask[by1:by2, bx1:bx2] = mask_160[by1:by2, bx1:bx2]
+            cropped_mask = np.zeros_like(mask_proto)
+            cropped_mask[by1:by2, bx1:bx2] = mask_proto[by1:by2, bx1:bx2]
 
-            # Upscale mask to 640x640
-            mask_640 = cv2.resize(cropped_mask, (640, 640), interpolation=cv2.INTER_LINEAR)
+            # Upscale mask to img_w x img_h
+            mask_scaled = cv2.resize(cropped_mask, (img_w, img_h), interpolation=cv2.INTER_LINEAR)
             # Remove letterbox padding
-            unpadded_mask = mask_640[int(pad_h):int(640 - pad_h), int(pad_w):int(640 - pad_w)]
+            unpadded_mask = mask_scaled[int(pad_h):int(img_h - pad_h), int(pad_w):int(img_w - pad_w)]
             mask_orig = cv2.resize(unpadded_mask, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR)
 
             binary_mask = (mask_orig > 0.50).astype(np.uint8) * 255
