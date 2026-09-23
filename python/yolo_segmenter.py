@@ -72,7 +72,10 @@ class YOLOPillSegmenter:
                     opts = ort.SessionOptions()
                     opts.intra_op_num_threads = 1
                     opts.inter_op_num_threads = 1
-                    opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+                    opts.enable_cpu_mem_arena = False
+                    opts.enable_mem_pattern = False
+                    opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+                    opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_BASIC
                     self.session = ort.InferenceSession(found_path, sess_options=opts, providers=["CPUExecutionProvider"])
                     self.backend = "onnxruntime"
                     return
@@ -129,7 +132,10 @@ class YOLOPillSegmenter:
         input_tensor = input_tensor[None, ...]  # Add batch dim
 
         input_name = self.session.get_inputs()[0].name
-        outputs = self.session.run(None, {input_name: input_tensor})
+        try:
+            outputs = self.session.run(None, {input_name: input_tensor})
+        except Exception:
+            return self._segment_scientific_peak_watershed(image, min_area, max_area)
 
         # YOLOv8-seg outputs: output0 = [1, num_channels, 8400], output1 = [1, 32, 160, 160]
         preds = np.squeeze(outputs[0]).T  # shape [8400, num_channels]
