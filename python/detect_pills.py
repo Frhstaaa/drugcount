@@ -388,6 +388,8 @@ def detect_pills(image, shape_filter="all", min_area=140, max_area=7500, sensiti
             "height": orig_h_val,
             "cx": orig_cx,
             "cy": orig_cy,
+            "pct_x": round((orig_cx / orig_w) * 100, 2) if orig_w > 0 else 0.0,
+            "pct_y": round((orig_cy / orig_h) * 100, 2) if orig_h > 0 else 0.0,
             "radius": radius,
             "shape": pill["shape"],
             "confidence": round(pill["confidence"], 2),

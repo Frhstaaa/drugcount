@@ -17,7 +17,8 @@ import {
     Lightbulb,
     BookmarkPlus,
     Sun,
-    Info
+    Info,
+    Sparkles
 } from 'lucide-react';
 import Navbar from '@/Components/Navbar';
 import SaveSessionModal from '@/Components/SaveSessionModal';
@@ -34,6 +35,13 @@ export default function VerificationSession({ stats, recentSessions = [] }) {
     const [torchState, setTorchState] = useState(false);
     const [hasTorchCapability, setHasTorchCapability] = useState(false);
     const [hapticState, setHapticState] = useState(true);
+
+    // Live Auto-Detection & Stability State
+    const [isAutoDetect, setIsAutoDetect] = useState(true);
+    const [isStable, setIsStable] = useState(false);
+    const isScanningRef = useRef(false);
+    const lastCountRef = useRef(0);
+    const stableCountRef = useRef(0);
 
     // Pill counting state
     const [currentShape, setCurrentShape] = useState('all');
@@ -73,7 +81,7 @@ export default function VerificationSession({ stats, recentSessions = [] }) {
         setTimeout(() => setToastMessage(''), 3500);
     };
 
-    // Initialize Camera
+    // Initialize Camera with maximum hardware capabilities (4K / 1080p, Continuous Autofocus)
     const startCamera = async (facing = cameraFacing) => {
         try {
             if (stream) {
@@ -87,19 +95,46 @@ export default function VerificationSession({ stats, recentSessions = [] }) {
                 return;
             }
 
-            let newStream;
-            try {
-                // Prioritaskan kamera belakang untuk nampan obat
-                newStream = await navigator.mediaDevices.getUserMedia({
-                    video: {
-                        facingMode: { ideal: facing },
-                        width: { ideal: 1280 },
-                        height: { ideal: 720 },
-                    },
-                    audio: false,
-                });
-            } catch (specificErr) {
-                console.warn('Constraint kamera spesifik gagal, mencoba fallback default video: true', specificErr);
+            let newStream = null;
+            const resolutionTiers = [
+                // Tier 1: 4K / UHD Ultra Max
+                {
+                    facingMode: { ideal: facing },
+                    width: { ideal: 3840, min: 1920 },
+                    height: { ideal: 2160, min: 1080 },
+                    frameRate: { ideal: 60, min: 30 },
+                },
+                // Tier 2: Full HD 1080p
+                {
+                    facingMode: { ideal: facing },
+                    width: { ideal: 1920, min: 1280 },
+                    height: { ideal: 1080, min: 720 },
+                },
+                // Tier 3: HD 720p
+                {
+                    facingMode: { ideal: facing },
+                    width: { ideal: 1280 },
+                    height: { ideal: 720 },
+                },
+                // Tier 4: Generic facing fallback
+                {
+                    facingMode: { ideal: facing },
+                },
+            ];
+
+            for (const tier of resolutionTiers) {
+                try {
+                    newStream = await navigator.mediaDevices.getUserMedia({
+                        video: tier,
+                        audio: false,
+                    });
+                    if (newStream) break;
+                } catch (e) {
+                    // Try next tier
+                }
+            }
+
+            if (!newStream) {
                 newStream = await navigator.mediaDevices.getUserMedia({
                     video: true,
                     audio: false,
@@ -116,11 +151,27 @@ export default function VerificationSession({ stats, recentSessions = [] }) {
                 videoRef.current.play().catch(() => {});
             }
 
-            // Cek kemampuan senter / flashlight
+            // Maksimalkan kemampuan hardware (Continuous Autofocus, Macro, Torch, Exposure)
             const videoTrack = newStream.getVideoTracks()[0];
             if (videoTrack && videoTrack.getCapabilities) {
                 const capabilities = videoTrack.getCapabilities();
                 setHasTorchCapability(Boolean(capabilities.torch));
+
+                const advancedConstraints = {};
+                if (capabilities.focusMode?.includes('continuous')) {
+                    advancedConstraints.focusMode = 'continuous';
+                }
+                if (capabilities.exposureMode?.includes('continuous')) {
+                    advancedConstraints.exposureMode = 'continuous';
+                }
+                if (capabilities.whiteBalanceMode?.includes('continuous')) {
+                    advancedConstraints.whiteBalanceMode = 'continuous';
+                }
+                if (Object.keys(advancedConstraints).length > 0) {
+                    videoTrack.applyConstraints({
+                        advanced: [advancedConstraints],
+                    }).catch(() => {});
+                }
             }
         } catch (err) {
             console.warn('Akses kamera ditolak atau belum diizinkan:', err);
@@ -201,7 +252,7 @@ export default function VerificationSession({ stats, recentSessions = [] }) {
         if (!hapticState) triggerVibrate(50);
     };
 
-    // Capture current frame to base64
+    // Capture current frame to base64 with maximum sensor resolution
     const captureFrame = () => {
         if (!videoRef.current && !rawImageBase64) return null;
 
@@ -209,16 +260,18 @@ export default function VerificationSession({ stats, recentSessions = [] }) {
         const ctx = canvas.getContext('2d');
 
         if (videoRef.current && isCameraActive) {
-            canvas.width = videoRef.current.videoWidth || 1280;
-            canvas.height = videoRef.current.videoHeight || 720;
-            ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
-            return canvas.toDataURL('image/jpeg', 0.9);
+            const vw = videoRef.current.videoWidth || 1920;
+            const vh = videoRef.current.videoHeight || 1080;
+            canvas.width = vw;
+            canvas.height = vh;
+            ctx.drawImage(videoRef.current, 0, 0, vw, vh);
+            return canvas.toDataURL('image/jpeg', 0.92);
         } else {
             return rawImageBase64 || DEMO_TRAY_URL;
         }
     };
 
-    // Run Python detection on image
+    // Run Python detection on image (Explicit Manual Trigger)
     const runDetection = async (imageBase64, shape = currentShape) => {
         setIsDetecting(true);
         try {
@@ -258,6 +311,72 @@ export default function VerificationSession({ stats, recentSessions = [] }) {
         }
     };
 
+    // Live Real-Time Auto-Detection Loop
+    useEffect(() => {
+        if (!isAutoDetect || isFrozen || !isCameraActive || isSaveModalOpen) {
+            return;
+        }
+
+        let isCancelled = false;
+
+        const runAutoScan = async () => {
+            if (isScanningRef.current || isDetecting || isFrozen || isCancelled) {
+                return;
+            }
+
+            const video = videoRef.current;
+            if (!video || video.readyState < 2 || video.paused || video.ended) {
+                return;
+            }
+
+            isScanningRef.current = true;
+            try {
+                const frame = captureFrame();
+                if (!frame) return;
+
+                const res = await axios.post('/api/detect', {
+                    image: frame,
+                    shape: currentShape,
+                    sensitivity: 50,
+                });
+
+                if (!isCancelled && res.data && res.data.success) {
+                    const count = res.data.count;
+                    setAutoCount(count);
+                    setManualCount(count);
+                    setDetectedPills(res.data.pills || []);
+                    setConfidence(count > 0 ? 99 : 0);
+                    if (res.data.quality) {
+                        setQualityInfo(res.data.quality);
+                    }
+
+                    // Stability tracking
+                    if (count > 0 && count === lastCountRef.current) {
+                        stableCountRef.current += 1;
+                        if (stableCountRef.current >= 2 && !isStable) {
+                            setIsStable(true);
+                            triggerVibrate(25);
+                        }
+                    } else {
+                        stableCountRef.current = 0;
+                        setIsStable(false);
+                        lastCountRef.current = count;
+                    }
+                }
+            } catch (err) {
+                // Silently handle live frame dropouts
+            } finally {
+                isScanningRef.current = false;
+            }
+        };
+
+        const timerId = setInterval(runAutoScan, 850);
+        return () => {
+            isCancelled = true;
+            clearInterval(timerId);
+        };
+    }, [isAutoDetect, isFrozen, isCameraActive, isSaveModalOpen, currentShape]);
+
     // Freeze & Count Action (Giant Button)
     const toggleFreeze = async () => {
         triggerVibrate();
@@ -269,12 +388,19 @@ export default function VerificationSession({ stats, recentSessions = [] }) {
             setDetectedPills([]);
             setAutoCount(0);
             setManualCount(0);
+            setIsStable(false);
+            stableCountRef.current = 0;
         } else {
-            // Freeze & Run Detection!
-            setIsFrozen(true);
+            // Freeze & Lock current frame!
             const frame = captureFrame();
             setRawImageBase64(frame);
-            await runDetection(frame, currentShape);
+            setIsFrozen(true);
+
+            if (detectedPills.length === 0) {
+                await runDetection(frame, currentShape);
+            } else {
+                showToast(`Hasil ${manualCount} butir obat terkunci.`);
+            }
         }
     };
 
@@ -405,13 +531,36 @@ export default function VerificationSession({ stats, recentSessions = [] }) {
 
                 {/* Top Telemetry & Filter Strip */}
                 <div className="pt-2 pb-2 flex items-center justify-between gap-1.5">
-                    <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-surface-container-high/90 text-on-surface shadow-sm border border-surface-container-highest/50">
-                        <span className="w-2 h-2 rounded-full bg-secondary animate-ping"></span>
-                        <span className="w-2 h-2 rounded-full bg-secondary -ml-2"></span>
-                        <span className="font-label-code text-[10px] tracking-wider text-secondary uppercase font-semibold">
-                            {isFrozen ? 'HASIL TERKUNCI' : 'KAMERA LIVE'}
+                    <button
+                        type="button"
+                        onClick={() => {
+                            triggerVibrate(20);
+                            setIsAutoDetect(!isAutoDetect);
+                            showToast(!isAutoDetect ? 'Auto Scan Real-Time Aktif' : 'Auto Scan Dinonaktifkan (Manual)');
+                        }}
+                        className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full shadow-sm border transition-all ${
+                            isFrozen
+                                ? 'bg-surface-container-high/90 text-secondary border-secondary/40'
+                                : isStable
+                                ? 'bg-secondary/25 text-secondary border-secondary shadow-[0_0_12px_rgba(148,222,45,0.4)]'
+                                : isAutoDetect
+                                ? 'bg-primary/20 text-primary border-primary/50'
+                                : 'bg-surface-container-high/90 text-on-surface-variant border-surface-container-highest/50'
+                        }`}
+                        title="Klik untuk beralih mode auto scan"
+                    >
+                        <span className={`w-2 h-2 rounded-full ${isFrozen || isStable ? 'bg-secondary' : isAutoDetect ? 'bg-primary' : 'bg-outline'} animate-ping`}></span>
+                        <span className={`w-2 h-2 rounded-full ${isFrozen || isStable ? 'bg-secondary' : isAutoDetect ? 'bg-primary' : 'bg-outline'} -ml-2`}></span>
+                        <span className="font-label-code text-[10px] tracking-wider uppercase font-semibold">
+                            {isFrozen
+                                ? 'HASIL TERKUNCI'
+                                : isStable
+                                ? `STABIL (${manualCount} BUTIR)`
+                                : isAutoDetect
+                                ? 'AUTO SCAN LIVE'
+                                : 'MANUAL SCAN'}
                         </span>
-                    </div>
+                    </button>
 
                     {/* Shape Selectors */}
                     <div className="flex items-center p-0.5 rounded-full bg-surface-container-low border border-surface-container-highest/40">
@@ -492,24 +641,28 @@ export default function VerificationSession({ stats, recentSessions = [] }) {
                         <div className="absolute inset-x-0 h-0.5 bg-gradient-to-r from-transparent via-primary to-transparent pointer-events-none animate-[bounce_3s_infinite]" />
                     )}
 
-                    {/* Pill Detection Markers Overlay (Only displayed when pills are actually detected after freeze) */}
+                    {/* Pill Detection Markers Overlay (Active in frozen state or live auto-detect) */}
                     <div className="absolute inset-0 pointer-events-none">
-                        {isFrozen &&
+                        {(isFrozen || (isAutoDetect && isCameraActive)) &&
                             detectedPills.map((pill, idx) => {
-                                const topPct = pill.pctY !== undefined
-                                    ? `${pill.pctY}%`
-                                    : `${(pill.cy / 600) * 100}%`;
-                                const leftPct = pill.pctX !== undefined
-                                    ? `${pill.pctX}%`
-                                    : `${(pill.cx / 800) * 100}%`;
+                                const topPct = pill.pct_y !== undefined
+                                    ? `${pill.pct_y}%`
+                                    : (pill.pctY !== undefined ? `${pill.pctY}%` : `${(pill.cy / 600) * 100}%`);
+                                const leftPct = pill.pct_x !== undefined
+                                    ? `${pill.pct_x}%`
+                                    : (pill.pctX !== undefined ? `${pill.pctX}%` : `${(pill.cx / 800) * 100}%`);
 
                                 return (
                                     <div
                                         key={pill.id || idx}
-                                        className="pill-node absolute flex items-center justify-center -translate-x-1/2 -translate-y-1/2"
+                                        className="pill-node absolute flex items-center justify-center -translate-x-1/2 -translate-y-1/2 transition-all duration-150"
                                         style={{ top: topPct, left: leftPct }}
                                     >
-                                        <span className="w-5 h-5 rounded-full bg-primary/20 flex items-center justify-center shadow-[0_0_12px_rgba(107,216,203,0.8)] border-2 border-primary">
+                                        <span className={`w-5 h-5 rounded-full flex items-center justify-center border-2 transition-all ${
+                                            isStable
+                                                ? 'bg-secondary/25 border-secondary shadow-[0_0_14px_rgba(148,222,45,0.85)]'
+                                                : 'bg-primary/20 border-primary shadow-[0_0_12px_rgba(107,216,203,0.8)]'
+                                        }`}>
                                             <span className="w-2 h-2 rounded-full bg-secondary shadow-[0_0_6px_rgba(148,222,45,0.9)] animate-pulse"></span>
                                         </span>
                                     </div>
@@ -593,17 +746,40 @@ export default function VerificationSession({ stats, recentSessions = [] }) {
                             <Lock className="w-5 h-5 flex-shrink-0" />
                         )}
                         <span className="tracking-wide">
-                            {isFrozen ? 'TERKUNCI (KETUK UNTUK LANJUT)' : 'KUNCI & HITUNG (FREEZE)'}
+                            {isFrozen
+                                ? 'BUKA KAMERA (LANJUTKAN LIVE SCAN)'
+                                : manualCount > 0
+                                ? `KUNCI HASIL (${manualCount} BUTIR)`
+                                : 'KUNCI & HITUNG (FREEZE)'}
                         </span>
                     </button>
 
-                    {/* Quick Utility Paddles Row */}
-                    <div className="grid grid-cols-4 gap-1.5">
+                    {/* Quick Utility Paddles Row (5 Columns) */}
+                    <div className="grid grid-cols-5 gap-1">
+                        {/* Auto-Detect Switch */}
+                        <button
+                            type="button"
+                            onClick={() => {
+                                triggerVibrate(20);
+                                setIsAutoDetect(!isAutoDetect);
+                                showToast(!isAutoDetect ? 'Auto Scan Real-Time Aktif' : 'Auto Scan Dinonaktifkan (Manual)');
+                            }}
+                            className={`h-10 rounded-xl text-[10px] sm:text-[11px] flex flex-col items-center justify-center gap-0.5 shadow-sm transition-all ${
+                                isAutoDetect
+                                    ? 'bg-secondary/20 text-secondary border border-secondary/40 font-semibold'
+                                    : 'bg-surface-container-high text-on-surface-variant hover:bg-surface-container-highest'
+                            }`}
+                            title="Otomatis memindai obat secara real-time"
+                        >
+                            <Sparkles className="w-3.5 h-3.5" />
+                            <span>{isAutoDetect ? 'Auto ON' : 'Auto OFF'}</span>
+                        </button>
+
                         {/* Flash/Torch Switch */}
                         <button
                             type="button"
                             onClick={toggleTorch}
-                            className={`h-10 rounded-xl text-[11px] flex items-center justify-center gap-1 shadow-sm transition-all ${
+                            className={`h-10 rounded-xl text-[10px] sm:text-[11px] flex flex-col items-center justify-center gap-0.5 shadow-sm transition-all ${
                                 torchState
                                     ? 'bg-primary-container text-on-primary font-semibold'
                                     : 'bg-surface-container-high text-on-surface hover:bg-surface-container-highest'
@@ -621,7 +797,7 @@ export default function VerificationSession({ stats, recentSessions = [] }) {
                         <button
                             type="button"
                             onClick={resetCount}
-                            className="h-10 rounded-xl bg-surface-container-high text-on-surface text-[11px] flex items-center justify-center gap-1 shadow-sm hover:bg-surface-container-highest transition-colors"
+                            className="h-10 rounded-xl bg-surface-container-high text-on-surface text-[10px] sm:text-[11px] flex flex-col items-center justify-center gap-0.5 shadow-sm hover:bg-surface-container-highest transition-colors"
                         >
                             <RotateCcw className="w-3.5 h-3.5 text-on-surface-variant" />
                             <span>Reset 0</span>
@@ -631,7 +807,7 @@ export default function VerificationSession({ stats, recentSessions = [] }) {
                         <button
                             type="button"
                             onClick={toggleHaptic}
-                            className={`h-10 rounded-xl text-[11px] flex items-center justify-center gap-1 shadow-sm transition-all ${
+                            className={`h-10 rounded-xl text-[10px] sm:text-[11px] flex flex-col items-center justify-center gap-0.5 shadow-sm transition-all ${
                                 hapticState
                                     ? 'bg-surface-container-high text-secondary font-medium'
                                     : 'bg-surface-container-high text-on-surface-variant'
@@ -645,7 +821,7 @@ export default function VerificationSession({ stats, recentSessions = [] }) {
                         <button
                             type="button"
                             onClick={() => fileInputRef.current?.click()}
-                            className="h-10 rounded-xl bg-surface-container-high text-on-surface text-[11px] flex items-center justify-center gap-1 shadow-sm hover:bg-surface-container-highest transition-colors"
+                            className="h-10 rounded-xl bg-surface-container-high text-on-surface text-[10px] sm:text-[11px] flex flex-col items-center justify-center gap-0.5 shadow-sm hover:bg-surface-container-highest transition-colors"
                             title="Unggah foto obat dari galeri/file"
                         >
                             <Camera className="w-3.5 h-3.5 text-primary" />
